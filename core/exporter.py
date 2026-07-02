@@ -27,6 +27,17 @@ def export_docx(data, path):
     sec.page_width, sec.page_height = Cm(29.7), Cm(21)
     doc.add_heading("BÁO CÁO PHÂN TÍCH HỒ SƠ MỜI THẦU", 0)
     doc.add_paragraph(f"File: {data['meta'].get('file','')} — {len(data['items'])} hạng mục")
+    pj = data.get("proj", {})
+    if pj:
+        doc.add_heading("THÔNG TIN DỰ ÁN", 1)
+        t0 = doc.add_table(rows=0, cols=2); t0.style = "Table Grid"
+        for k, f in [("Chủ đầu tư", "chu_dau_tu"), ("Địa chỉ", "dia_chi"), ("Tên gói thầu", "ten_goi_thau"),
+                     ("Nguồn vốn", "nguon_von"), ("Phương thức LCNT", "phuong_thuc"),
+                     ("Loại hợp đồng", "loai_hop_dong"), ("Thời gian thực hiện", "thoi_gian_thuc_hien"),
+                     ("Địa điểm", "dia_diem")]:
+            r = t0.add_row().cells; r[0].text = k; r[1].text = str(pj.get(f, ""))
+        for x in pj.get("khac", []):
+            doc.add_paragraph(str(x), style="List Bullet")
     t = doc.add_table(rows=1, cols=7); t.style = "Table Grid"
     for i, h in enumerate(HEADERS):
         t.rows[0].cells[i].text = h
@@ -51,11 +62,21 @@ def export_docx(data, path):
                 c = t2.add_row().cells
                 c[0].text = b.get("yeu_cau", ""); c[1].text = b.get("gia_tri", ""); c[2].text = b.get("danh_gia", "")
         doc.add_paragraph("Nhận xét: " + ss.get("nhan_xet", ""))
-    doc.add_heading("NGHĨA VỤ NHÀ THẦU", 1)
+    doc.add_heading("NGHĨA VỤ NHÀ THẦU (PHÂN TÍCH CHI TIẾT)", 1)
     for g in data.get("duties", []):
         doc.add_paragraph(g.get("nhom", ""), style="Heading 2")
-        for b in g.get("noi_dung", []):
+        for b in g.get("yeu_cau", []) or g.get("noi_dung", []):
             doc.add_paragraph(b, style="List Bullet")
+        if g.get("tai_lieu_can_nop"):
+            doc.add_paragraph("Tài liệu cần nộp:").runs[0].bold = True
+            for b in g["tai_lieu_can_nop"]:
+                doc.add_paragraph(b, style="List Bullet")
+        if g.get("rui_ro_bi_loai"):
+            doc.add_paragraph("⚠ Rủi ro bị loại: " + g["rui_ro_bi_loai"])
+        if g.get("checklist"):
+            doc.add_paragraph("Checklist trước khi nộp thầu:").runs[0].bold = True
+            for b in g["checklist"]:
+                doc.add_paragraph("☐ " + b, style="List Bullet")
     doc.save(path)
 
 
@@ -101,10 +122,17 @@ def export_xlsx(data, path):
                             b.get("yeu_cau", ""), b.get("gia_tri", ""), b.get("danh_gia", ""), tag, u.get("nguon", "")])
     ws2.auto_filter.ref = ws2.dimensions
     ws3 = wb.create_sheet("Nghĩa vụ nhà thầu")
+    ws3.append(["Nhóm", "Yêu cầu", "Tài liệu cần nộp", "Rủi ro bị loại", "Checklist"])
     for g in data.get("duties", []):
-        ws3.append([g.get("nhom", "")])
-        for b in g.get("noi_dung", []):
-            ws3.append(["", b])
+        ws3.append([g.get("nhom", ""), "\n".join(g.get("yeu_cau", []) or g.get("noi_dung", [])),
+                    "\n".join(g.get("tai_lieu_can_nop", [])), g.get("rui_ro_bi_loai", ""),
+                    "\n".join(g.get("checklist", []))])
+    ws3.auto_filter.ref = ws3.dimensions
+    ws4 = wb.create_sheet("Thông tin dự án")
+    for k, f in [("Chủ đầu tư", "chu_dau_tu"), ("Địa chỉ", "dia_chi"), ("Tên gói thầu", "ten_goi_thau"),
+                 ("Nguồn vốn", "nguon_von"), ("Phương thức LCNT", "phuong_thuc"),
+                 ("Loại hợp đồng", "loai_hop_dong"), ("Thời gian", "thoi_gian_thuc_hien"), ("Địa điểm", "dia_diem")]:
+        ws4.append([k, str(data.get("proj", {}).get(f, ""))])
     wb.save(path)
 
 

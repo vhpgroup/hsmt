@@ -46,26 +46,37 @@ class AIEngine:
         self.key = cfg.get("api_key", "")
         self.usage = {"in": 0, "out": 0}
 
-    def chat(self, prompt, retries=4):
+    def chat(self, prompt, retries=5):
         body = {"model": self.model, "temperature": 0.2,
                 "messages": [{"role": "user", "content": prompt}]}
+        last = ""
         for i in range(retries):
             try:
-                r = requests.post(f"{self.base}/chat/completions", timeout=90,
+                r = requests.post(f"{self.base}/chat/completions", timeout=120,
                                   headers={"Authorization": f"Bearer {self.key}"}, json=body)
-                if r.status_code in (429, 500, 502, 503):
-                    time.sleep(6 * (i + 1)); continue
-                r.raise_for_status()
+                if r.status_code == 429 or r.status_code >= 500:
+                    last = f"HTTP {r.status_code}: {r.text[:200]}"
+                    wait = 0
+                    try:
+                        wait = int(r.headers.get("Retry-After", "0"))
+                    except ValueError:
+                        pass
+                    time.sleep(min(wait or 10 * (i + 1), 65))
+                    continue
+                if r.status_code >= 400:
+                    # Lỗi cấu hình (key sai/model sai/URL sai) — báo NGAY, không retry vô ích
+                    raise RuntimeError(f"Lỗi API {r.status_code}: {r.text[:300]}\n→ Kiểm tra API key / tên model / Base URL trong ⚙️ Cài đặt")
                 d = r.json()
                 u = d.get("usage", {})
                 self.usage["in"] += u.get("prompt_tokens", 0)
                 self.usage["out"] += u.get("completion_tokens", 0)
                 return d["choices"][0]["message"]["content"]
-            except requests.RequestException:
-                if i == retries - 1:
-                    raise
-                time.sleep(6 * (i + 1))
-        raise RuntimeError("AI không phản hồi sau nhiều lần thử")
+            except requests.RequestException as e:
+                last = f"{type(e).__name__}: {str(e)[:200]}"
+                if i < retries - 1:
+                    time.sleep(10 * (i + 1))
+        raise RuntimeError(f"AI không phản hồi sau {retries} lần thử. Lỗi cuối: {last or 'không rõ'}\n"
+                           "→ Thường do: hết hạn mức free trong ngày (chờ/đổi model gemini-2.0-flash), mạng chặn googleapis.com, hoặc key chưa kích hoạt")
 
     @staticmethod
     def parse_json(text):

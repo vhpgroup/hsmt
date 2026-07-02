@@ -21,8 +21,20 @@ Trả về DUY NHẤT JSON:
 {"ung_vien":[{"model":"","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số HSMT","gia_tri":"giá trị thực tế của model","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt"}],"nguon":"URL/domain datasheet"}],"nhan_xet":"tiêu chí nào khóa hãng, ứng viên nào đạt 100%"}
 """
 
-DUTY_PROMPT = """Phân tích các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu sau (ngoài bảng thông số).
-Trả về DUY NHẤT JSON: [{"nhom":"tên nhóm","noi_dung":["gạch đầu dòng..."]}] — gộp thành 5-8 nhóm (tài liệu chứng minh, CO/CQ, kiểm định, bảo hành, an toàn thi công, ATTT...).
+DUTY_PROMPT = """Phân tích SÂU các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu (phần ngoài bảng thông số).
+Gộp thành 6-9 nhóm (tài liệu chứng minh, CO/CQ & giao nhận, kiểm định, bảo hành & hậu mãi, lắp đặt chạy thử,
+an toàn thi công & hoàn trả mặt bằng, an toàn thông tin, sở hữu trí tuệ...). GIỮ NGUYÊN các con số quan trọng
+(48 giờ, cấp độ 2, mới 100%...). Trả về DUY NHẤT JSON:
+[{"nhom":"tên nhóm","yeu_cau":["từng yêu cầu cụ thể trong hồ sơ"],
+"tai_lieu_can_nop":["tài liệu/chứng từ nhà thầu phải chuẩn bị/nộp"],
+"rui_ro_bi_loai":"điểm nào làm sai có thể bị loại E-HSDT hoặc từ chối nhận hàng",
+"checklist":["việc cần làm trước khi nộp thầu"]}]
+VĂN BẢN:
+"""
+
+PROJ_PROMPT = """Trích THÔNG TIN DỰ ÁN/GÓI THẦU từ văn bản hồ sơ. Trả về DUY NHẤT JSON:
+{"chu_dau_tu":"","dia_chi":"","ten_goi_thau":"","nguon_von":"","phuong_thuc":"","loai_hop_dong":"",
+"thoi_gian_thuc_hien":"","dia_diem":"","khac":["thông tin đáng chú ý khác (bảo đảm dự thầu, số hạng mục...)"]}
 VĂN BẢN:
 """
 
@@ -79,3 +91,6 @@ class AIEngine:
 
     def duties(self, text):
         return self.parse_json(self.chat(DUTY_PROMPT + text[:15000]))
+
+    def project_info(self, text):
+        return self.parse_json(self.chat(PROJ_PROMPT + text[:8000]))

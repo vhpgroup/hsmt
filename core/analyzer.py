@@ -41,7 +41,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None):
     for n, it in enumerate(items):
         ident = results.get(it["id"], {})
         row = dict(it); row["ident"] = ident; row["risk"] = risk_level(ident)
-        if do_cmp and ident.get("model") and "phổ thông" not in ident.get("model", "").lower():
+        if do_cmp and ident.get("model"):  # tra web MỌI hạng mục, yêu cầu ứng viên đạt 100%
             ck = item_key(it, "compare")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:

@@ -62,36 +62,7 @@ class Worker(QThread):
             ai = AIEngine(cfg)
             counter = {"used": 0}
 
-            self.wait_if_paused()
-            self.emit_progress("Trích thông tin dự án...", 10)
-            try:
-                proj = ai.project_info(raw["text"])
-            except Exception:
-                proj = {}
-            self.project_ready.emit({
-                "meta": raw["meta"],
-                "items": [],
-                "duties": [],
-                "proj": proj,
-                "usage": ai.usage,
-                "searches": counter["used"],
-            })
-
-            self.wait_if_paused()
-            self.emit_progress("Phân tích nghĩa vụ nhà thầu...", 18)
-            try:
-                duties = ai.duties(raw["text"])
-            except Exception:
-                duties = []
-            self.duties_ready.emit({
-                "meta": raw["meta"],
-                "items": [],
-                "duties": duties,
-                "proj": proj,
-                "usage": ai.usage,
-                "searches": counter["used"],
-            })
-
+            # Ưu tiên phân tích bảng hạng mục TRƯỚC — thông tin dự án & nghĩa vụ chạy cuối
             items = preprocess.clean(raw["items"])
             if not items:
                 raise RuntimeError("Không tìm thấy bảng hạng mục trong file")
@@ -106,6 +77,36 @@ class Worker(QThread):
                 on_item=self.item_ready.emit,
                 pause_check=self.wait_if_paused,
             )
+
+            self.wait_if_paused()
+            self.emit_progress("Trích thông tin dự án...", 96)
+            try:
+                proj = ai.project_info(raw["text"])
+            except Exception:
+                proj = {}
+            self.project_ready.emit({
+                "meta": raw["meta"],
+                "items": [],
+                "duties": [],
+                "proj": proj,
+                "usage": ai.usage,
+                "searches": counter["used"],
+            })
+
+            self.wait_if_paused()
+            self.emit_progress("Phân tích nghĩa vụ nhà thầu...", 98)
+            try:
+                duties = ai.duties(raw["text"])
+            except Exception:
+                duties = []
+            self.duties_ready.emit({
+                "meta": raw["meta"],
+                "items": [],
+                "duties": duties,
+                "proj": proj,
+                "usage": ai.usage,
+                "searches": counter["used"],
+            })
 
             self.done.emit({
                 "meta": raw["meta"],

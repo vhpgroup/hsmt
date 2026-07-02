@@ -34,21 +34,22 @@ def export_docx(data, path):
         cells = t.add_row().cells
         for i, v in enumerate(r):
             cells[i].text = str(v)
-    doc.add_heading("SO SÁNH SẢN PHẨM TƯƠNG ĐƯƠNG", 1)
+    doc.add_heading("SO SÁNH SẢN PHẨM TƯƠNG ĐƯƠNG (yêu cầu đạt 100%)", 1)
     for it in data["items"]:
         ss = it.get("so_sanh")
         if not ss or not ss.get("ung_vien"):
             continue
         doc.add_paragraph(f"STT {it['stt']} — {it['ten']}", style="Heading 2")
-        t2 = doc.add_table(rows=1, cols=4); t2.style = "Table Grid"
-        for i, h in enumerate(["Model (Hãng)", "Đánh giá tiêu chí", "Kết luận", "Ghi chú/Nguồn"]):
-            t2.rows[0].cells[i].text = h
         for u in ss["ung_vien"]:
-            c = t2.add_row().cells
-            c[0].text = f"{u.get('model','')} ({u.get('hang','')})"
-            c[1].text = " ".join(u.get("marks", []))
-            c[2].text = u.get("ket_luan", "")
-            c[3].text = u.get("ghi_chu_nguon", "")
+            tag = "ĐẠT 100%" if u.get("dat_100") else "CHƯA ĐẠT 100%"
+            doc.add_paragraph(f"{u.get('model','')} ({u.get('hang','')}) — {tag} — Nguồn: {u.get('nguon','')}",
+                              style="Heading 3")
+            t2 = doc.add_table(rows=1, cols=3); t2.style = "Table Grid"
+            for i, h in enumerate(["Yêu cầu HSMT", u.get("model", "Model"), "Đánh giá"]):
+                t2.rows[0].cells[i].text = h
+            for b in u.get("bang", []):
+                c = t2.add_row().cells
+                c[0].text = b.get("yeu_cau", ""); c[1].text = b.get("gia_tri", ""); c[2].text = b.get("danh_gia", "")
         doc.add_paragraph("Nhận xét: " + ss.get("nhan_xet", ""))
     doc.add_heading("NGHĨA VỤ NHÀ THẦU", 1)
     for g in data.get("duties", []):
@@ -91,11 +92,13 @@ def export_xlsx(data, path):
         ws.append([str(v) for v in r])
     ws.auto_filter.ref = ws.dimensions
     ws2 = wb.create_sheet("So sánh tương đương")
-    ws2.append(["STT", "Hạng mục", "Model", "Hãng", "Đánh giá", "Kết luận", "Nguồn"])
+    ws2.append(["STT", "Hạng mục", "Model (Hãng)", "Yêu cầu HSMT", "Giá trị của model", "Đánh giá", "Đạt 100%?", "Nguồn"])
     for it in data["items"]:
         for u in (it.get("so_sanh") or {}).get("ung_vien", []):
-            ws2.append([str(it["stt"]), it["ten"], u.get("model", ""), u.get("hang", ""),
-                        " ".join(u.get("marks", [])), u.get("ket_luan", ""), u.get("ghi_chu_nguon", "")])
+            tag = "ĐẠT 100%" if u.get("dat_100") else "Chưa đạt"
+            for b in u.get("bang", []):
+                ws2.append([str(it["stt"]), it["ten"], f"{u.get('model','')} ({u.get('hang','')})",
+                            b.get("yeu_cau", ""), b.get("gia_tri", ""), b.get("danh_gia", ""), tag, u.get("nguon", "")])
     ws2.auto_filter.ref = ws2.dimensions
     ws3 = wb.create_sheet("Nghĩa vụ nhà thầu")
     for g in data.get("duties", []):

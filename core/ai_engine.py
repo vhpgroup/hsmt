@@ -22,16 +22,19 @@ ID_PROMPT = """Bạn là chuyên gia phân tích hồ sơ mời thầu thiết b
 Với MỖI hạng mục dưới đây, nhận diện thông số được viết theo sản phẩm thật nào.
 Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
 {"stt":"...","model":"tên model cụ thể hoặc 'Hàng phổ thông'","hang":"hãng","tin_cay":"Cao|Trung bình|Thấp",
-"can_cu":"1-2 câu vì sao (dấu hiệu thông số nào)","khoa_hang":true/false,"goi_y_hang_pho_thong":"nếu là hàng phổ thông, gợi ý 3-4 hãng VN"}
+"can_cu":"1-2 câu vì sao (dấu hiệu thông số nào)","khoa_hang":true/false,"goi_y_hang_pho_thong":"nếu là hàng phổ thông, gợi ý 3-4 hãng VN",
+"thong_so":[{"ten":"tên tiêu chí ngắn","gia_tri":"giá trị yêu cầu (giữ nguyên con số)"}],
+"tu_khoa_tim":"chuỗi tìm Google tối ưu: loại thiết bị + 2-3 thông số đặc trưng nhất"}
 HẠNG MỤC:
 """
 
-CMP_PROMPT = """NHIỆM VỤ: Tách thông số yêu cầu thành TỪNG DÒNG tiêu chí riêng. Tìm model của hãng KHÁC đáp ứng 100% —
-nghĩa là MỌI dòng đều "✔ Đạt" hoặc "✔ Vượt" (đối chiếu datasheet trong ngữ cảnh web, không suy đoán).
-Chỉ liệt kê tối đa 3 ứng viên, ưu tiên hàng bán tại Việt Nam. Nếu KHÔNG có model nào đạt 100%,
-trả về model gần nhất, đánh dấu "✘ Không đạt" đúng dòng thiếu và ghi rõ trong nhan_xet.
+CMP_PROMPT = """NHIỆM VỤ: đối chiếu TỪNG DÒNG thông số yêu cầu (JSON chuẩn hóa ở trên) với các sản phẩm xuất hiện
+trong NGỮ CẢNH WEB (kết quả tìm theo thông số + nội dung datasheet/trang hãng đã tải). Chọn tối đa 3 model
+(ưu tiên hãng KHÁC hãng tham chiếu, bán tại Việt Nam) và KẾT LUẬN model nào ĐẠT 100% — mọi dòng "✔ Đạt"/"✔ Vượt".
+CHỈ dùng giá trị có trong ngữ cảnh/datasheet; thiếu dữ liệu thì ghi "~ Chưa xác minh", TUYỆT ĐỐI không bịa.
+Nếu không model nào đạt 100%, trả model gần nhất và đánh dấu "✘ Không đạt" đúng dòng thiếu.
 Trả về DUY NHẤT JSON:
-{"ung_vien":[{"model":"","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số HSMT","gia_tri":"giá trị thực tế của model","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt"}],"nguon":"URL/domain datasheet"}],"nhan_xet":"tiêu chí nào khóa hãng, ứng viên nào đạt 100%"}
+{"ung_vien":[{"model":"","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt|~ Chưa xác minh"}],"nguon":"URL datasheet/trang hãng"}],"nhan_xet":"kết luận model nào đạt 100%, dòng nào là điểm khóa"}
 """
 
 DUTY_PROMPT = """Phân tích SÂU các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu (phần ngoài bảng thông số).
@@ -110,9 +113,12 @@ class AIEngine:
         return self.parse_json(self.chat(ID_PROMPT + block))
 
     def compare(self, item, ident, search_ctx=""):
-        p = (f"Hạng mục: {item['ten']}\nThông số yêu cầu: {item['thongso'][:1500]}\n"
+        specs = ident.get("thong_so") or []
+        spec_block = json.dumps(specs, ensure_ascii=False) if specs else item["thongso"][:1500]
+        p = (f"Hạng mục: {item['ten']}\n"
+             f"THÔNG SỐ YÊU CẦU (JSON chuẩn hóa): {spec_block}\n"
              f"Model tham chiếu đã nhận diện: {ident.get('model')} ({ident.get('hang')})\n"
-             f"NGỮ CẢNH TRA CỨU WEB:\n{search_ctx[:6000]}\n" + CMP_PROMPT)
+             f"NGỮ CẢNH WEB (tìm theo thông số + datasheet):\n{search_ctx[:9000]}\n" + CMP_PROMPT)
         return self.parse_json(self.chat(p))
 
     def duties(self, text):

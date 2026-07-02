@@ -4,7 +4,7 @@ from PySide6.QtGui import QColor
 
 ID_HEADERS = ["STT", "Tên hàng hóa", "Thông số kỹ thuật chính (theo E-HSMT)",
               "KẾT QUẢ: Model + Hãng", "Độ tin cậy", "Căn cứ nhận diện", "Nguồn tra cứu"]
-CMP_HEADERS = ["STT", "Hạng mục", "Model ứng viên (Hãng)", "Yêu cầu HSMT", "Giá trị của model", "Đánh giá", "Đạt 100%?"]
+CMP_HEADERS = ["STT", "Hạng mục", "Model ứng viên (Hãng)", "Yêu cầu HSMT", "Giá trị của model", "Đánh giá", "Đạt 100%?", "Nguồn"]
 COLORS = {"Cao": "#e2f3e6", "Trung bình": "#fdf3d8", "Thấp": "#fde8e8",
           "CAO": "#fde8e8", "TRUNG BÌNH": "#fdf3d8", "THẤP": "#e2f3e6"}
 
@@ -33,8 +33,10 @@ def fill_identify(t, results):
         model = f"{d.get('model','')} — {d.get('hang','')}".strip(" —")
         if d.get("goi_y_hang_pho_thong"):
             model += f" (gợi ý: {d['goi_y_hang_pho_thong']})"
+        uvs = (r.get("so_sanh") or {}).get("ung_vien", [])
+        srcs = "; ".join(dict.fromkeys(u.get("nguon", "") for u in uvs if u.get("nguon")))[:250]
         vals = [r["stt"], r["ten"], r["thongso"][:300], model, d.get("tin_cay", ""),
-                d.get("can_cu", ""), (r.get("so_sanh") or {}).get("nhan_xet", "")[:150]]
+                d.get("can_cu", ""), srcs or (r.get("so_sanh") or {}).get("nhan_xet", "")[:150]]
         for c, v in enumerate(vals):
             t.setItem(row, c, _item(v, COLORS.get(d.get("tin_cay")) if c == 4 else None))
     t.resizeRowsToContents()
@@ -53,7 +55,7 @@ def fill_compare(t, results):
                 dg = b.get("danh_gia", "")
                 bg = "#e2f3e6" if "Đạt" in dg or "Vượt" in dg else "#fde8e8"
                 vals = [r["stt"], r["ten"], f"{u.get('model','')} ({u.get('hang','')})",
-                        b.get("yeu_cau", ""), b.get("gia_tri", ""), dg, tag]
+                        b.get("yeu_cau", ""), b.get("gia_tri", ""), dg, tag, u.get("nguon", "")]
                 for c, v in enumerate(vals):
                     t.setItem(row, c, _item(v, bg if c == 5 else ("#e2f3e6" if c == 6 and u.get("dat_100") else None)))
     t.resizeRowsToContents()

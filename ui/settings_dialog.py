@@ -2,6 +2,7 @@
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox,
                                QDialogButtonBox, QCheckBox, QPushButton, QHBoxLayout, QWidget)
 from core import cache
+from core.ai_engine import MODEL_BASES, resolve_base_url
 
 
 class SettingsDialog(QDialog):
@@ -12,7 +13,14 @@ class SettingsDialog(QDialog):
         cfg = cache.load_config()
         f = QFormLayout(self)
         self.base = QLineEdit(cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"))
-        self.model = QLineEdit(cfg.get("model", "gemini-2.5-flash"))
+        self.model = QComboBox()
+        self.model.addItems(["gemini-2.5-flash", "gpt-4.1-mini"])
+        current_model = cfg.get("model", "gemini-2.5-flash")
+        if current_model not in MODEL_BASES:
+            self.model.addItem(current_model)
+        self.model.setCurrentText(current_model)
+        self.model.currentTextChanged.connect(self.on_model_changed)
+        self.base.setText(resolve_base_url(current_model, self.base.text()))
         self.key = QLineEdit(cfg.get("api_key", "")); self.key.setEchoMode(QLineEdit.Password)
         self.sprov = QComboBox(); self.sprov.addItems(["serper", "tavily", "off"])
         self.sprov.setCurrentText(cfg.get("search_provider", "serper"))
@@ -37,8 +45,12 @@ class SettingsDialog(QDialog):
         f.addRow(bb)
 
     def save(self):
-        cache.save_config({"base_url": self.base.text().strip(), "model": self.model.text().strip(),
+        model = self.model.currentText().strip()
+        cache.save_config({"base_url": resolve_base_url(model, self.base.text()), "model": model,
                            "api_key": self.key.text().strip(), "search_provider": self.sprov.currentText(),
                            "search_key": self.skey.text().strip(), "compare": self.cmp.isChecked(),
                            "fetch_pages": self.fp.isChecked(), "ttl_days": self.ttl.value()})
         self.accept()
+
+    def on_model_changed(self, model):
+        self.base.setText(resolve_base_url(model, self.base.text()))

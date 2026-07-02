@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import threading
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (QMainWindow, QToolBar, QFileDialog, QTabWidget, QWidget, QVBoxLayout,
                                QLabel, QProgressBar, QTextBrowser, QMessageBox, QDialog, QStatusBar)
@@ -18,25 +19,45 @@ class Worker(QThread):
     def __init__(self, path):
         super().__init__()
         self.path = path
+        self._pause_gate = threading.Event()
+        self._pause_gate.set()
+        self._last_progress = 0
+
+    def emit_progress(self, text, value):
+        self._last_progress = value
+        self.progress.emit(text, value)
+
+    def pause(self):
+        self._pause_gate.clear()
+
+    def resume(self):
+        self._pause_gate.set()
+
+    def wait_if_paused(self):
+        if not self._pause_gate.is_set():
+            self.progress.emit("Đã tạm dừng — bấm Tiếp tục để chạy tiếp", self._last_progress)
+        self._pause_gate.wait()
 
     def run(self):
         try:
             cfg = cache.load_config()
-            self.progress.emit("Đang đọc file…", 5)
+            self.emit_progress("Đang đọc file…", 5)
             raw = extractor.extract(self.path)
             items = preprocess.clean(raw["items"])
             if not items:
                 raise RuntimeError("Không tìm thấy bảng hạng mục trong file")
             ai = AIEngine(cfg)
             counter = {"used": 0}
-            results = analyzer.run(items, cfg, ai, lambda s, p: self.progress.emit(s, p), counter,
-                                   on_item=self.item_ready.emit)
-            self.progress.emit("Trích thông tin dự án…", 94)
+            results = analyzer.run(items, cfg, ai, self.emit_progress, counter,
+                                   on_item=self.item_ready.emit, pause_check=self.wait_if_paused)
+            self.wait_if_paused()
+            self.emit_progress("Trích thông tin dự án…", 94)
             try:
                 proj = ai.project_info(raw["text"])
             except Exception:
                 proj = {}
-            self.progress.emit("Phân tích sâu nghĩa vụ nhà thầu…", 97)
+            self.wait_if_paused()
+            self.emit_progress("Phân tích sâu nghĩa vụ nhà thầu…", 97)
             try:
                 duties = ai.duties(raw["text"])
             except Exception:
@@ -59,6 +80,9 @@ class MainWindow(QMainWindow):
                          ("📕 Xuất PDF", lambda: self.export("pdf")), ("📊 Xuất Excel", lambda: self.export("xlsx")),
                          ("⚙️ Cài đặt", self.settings)]:
             a = tb.addAction(text); a.triggered.connect(fn)
+        self.pause_action = tb.addAction("⏸ Tạm dừng")
+        self.pause_action.triggered.connect(self.toggle_pause)
+        self.pause_action.setEnabled(False)
         self.pbar = QProgressBar(); self.plabel = QLabel("Chưa có file — bấm Import hồ sơ")
         tabs = QTabWidget()
         # Tab 0: Thông tin dự án
@@ -98,6 +122,8 @@ class MainWindow(QMainWindow):
             self.plabel.setText(f"Đã chọn: {os.path.basename(p)} — bấm ▶ Phân tích")
 
     def analyze(self):
+        if getattr(self, "worker", None) and self.worker.isRunning():
+            return QMessageBox.information(self, "Đang phân tích", "Tác vụ phân tích đang chạy.")
         if not self.file_path:
             return QMessageBox.warning(self, "Thiếu file", "Hãy Import hồ sơ trước.")
         if not cache.load_config().get("api_key"):
@@ -109,8 +135,35 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(lambda s, p: (self.plabel.setText(s), self.pbar.setValue(p)))
         self.worker.item_ready.connect(self.on_item)
         self.worker.done.connect(self.on_done)
-        self.worker.failed.connect(lambda e: QMessageBox.critical(self, "Lỗi", e))
+        self.worker.failed.connect(self.on_failed)
+        self.is_paused = False
+        self.pause_action.setText("⏸ Tạm dừng")
+        self.pause_action.setEnabled(True)
         self.worker.start()
+
+    def toggle_pause(self):
+        worker = getattr(self, "worker", None)
+        if not worker or not worker.isRunning():
+            return
+        if self.is_paused:
+            worker.resume()
+            self.is_paused = False
+            self.pause_action.setText("⏸ Tạm dừng")
+            self.st.setText("Tiếp tục phân tích")
+        else:
+            worker.pause()
+            self.is_paused = True
+            self.pause_action.setText("▶ Tiếp tục")
+            self.st.setText("Đã tạm dừng")
+
+    def reset_run_controls(self):
+        self.is_paused = False
+        self.pause_action.setText("⏸ Tạm dừng")
+        self.pause_action.setEnabled(False)
+
+    def on_failed(self, error):
+        self.reset_run_controls()
+        QMessageBox.critical(self, "Lỗi", error)
 
     def on_item(self, row):
         """Hiển thị live: cập nhật/thêm dòng ngay khi phân tích xong (không chờ hết)."""
@@ -120,6 +173,7 @@ class MainWindow(QMainWindow):
         widgets.fill_compare(self.cmp_table, ordered)
 
     def on_done(self, data):
+        self.reset_run_controls()
         self.data = data
         self.pbar.setValue(100)
         self.plabel.setText(f"✅ Xong — {len(data['items'])} hạng mục")

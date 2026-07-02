@@ -4,6 +4,19 @@ import json, re, time, requests
 
 DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_MODEL = "gemini-2.5-flash"
+MODEL_BASES = {
+    "gemini-2.5-flash": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "gpt-4.1-mini": "https://api.openai.com/v1",
+}
+
+
+def resolve_base_url(model, base_url):
+    base = (base_url or "").strip().rstrip("/")
+    expected = MODEL_BASES.get(model)
+    known_bases = {value.rstrip("/") for value in MODEL_BASES.values()}
+    if expected and (not base or base in known_bases):
+        return expected.rstrip("/")
+    return (base or DEFAULT_BASE).rstrip("/")
 
 ID_PROMPT = """Bạn là chuyên gia phân tích hồ sơ mời thầu thiết bị CNTT/điện tại Việt Nam.
 Với MỖI hạng mục dưới đây, nhận diện thông số được viết theo sản phẩm thật nào.
@@ -41,8 +54,8 @@ VĂN BẢN:
 
 class AIEngine:
     def __init__(self, cfg):
-        self.base = (cfg.get("base_url") or DEFAULT_BASE).rstrip("/")
         self.model = cfg.get("model") or DEFAULT_MODEL
+        self.base = resolve_base_url(self.model, cfg.get("base_url"))
         self.key = cfg.get("api_key", "")
         self.usage = {"in": 0, "out": 0}
 
@@ -65,7 +78,9 @@ class AIEngine:
                     continue
                 if r.status_code >= 400:
                     # Lỗi cấu hình (key sai/model sai/URL sai) — báo NGAY, không retry vô ích
-                    raise RuntimeError(f"Lỗi API {r.status_code}: {r.text[:300]}\n→ Kiểm tra API key / tên model / Base URL trong ⚙️ Cài đặt")
+                    raise RuntimeError(f"Lỗi API {r.status_code}: {r.text[:300]}\n"
+                                       f"→ Đang gọi model '{self.model}' tại '{self.base}'. "
+                                       "Kiểm tra API key / tên model / Base URL trong ⚙️ Cài đặt")
                 d = r.json()
                 u = d.get("usage", {})
                 self.usage["in"] += u.get("prompt_tokens", 0)

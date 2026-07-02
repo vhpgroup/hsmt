@@ -14,11 +14,16 @@ def risk_level(ident):
     return "THẤP"
 
 
-def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
+def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, pause_check=None):
     """Pipeline chính. on_item(row): callback bắn từng dòng ngay khi xong để UI hiển thị live."""
+    def wait_if_needed():
+        if pause_check:
+            pause_check()
+
     ttl = int(cfg.get("ttl_days", 30))
     results, todo = {}, []
     for it in items:
+        wait_if_needed()
         hit = cache.get(item_key(it, "identify"), ttl)
         if hit:
             results[it["id"]] = hit
@@ -26,6 +31,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
             todo.append(it)
     # Nhận diện theo lô 6
     for i in range(0, len(todo), 6):
+        wait_if_needed()
         batch = todo[i:i + 6]
         progress(f"AI nhận diện lô {i//6+1}/{(len(todo)+5)//6}…", 10 + int(30 * i / max(len(todo), 1)))
         try:
@@ -33,6 +39,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
         except Exception as e:
             arr = [{"stt": b["stt"], "model": f"Lỗi AI: {e}", "hang": "", "tin_cay": "Thấp", "can_cu": "", "khoa_hang": False} for b in batch]
         for b, r in zip(batch, arr):
+            wait_if_needed()
             if "lỗi ai" not in str(r.get("model", "")).lower():  # KHÔNG cache kết quả lỗi
                 cache.put(item_key(b, "identify"), r)
             results[b["id"]] = r
@@ -49,12 +56,14 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
     out = []
     do_cmp = cfg.get("compare", True)
     for n, it in enumerate(items):
+        wait_if_needed()
         ident = results.get(it["id"], {})
         row = dict(it); row["ident"] = ident; row["risk"] = risk_level(ident)
         if do_cmp and ident.get("model"):  # tra web MỌI hạng mục, yêu cầu ứng viên đạt 100%
             ck = item_key(it, "compare")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
+                wait_if_needed()
                 progress(f"Tra cứu & so sánh: {it['ten'][:30]}…", 40 + int(55 * n / len(items)))
                 ctx = websearch.build_context(it, ident, cfg, counter)
                 try:

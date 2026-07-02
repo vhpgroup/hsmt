@@ -14,18 +14,15 @@ def item_key(item, kind="identify"):
 
 
 def clean(items):
-    out, seen = [], {}
-    for it in items:
+    """KHÔNG gộp dòng trùng — có bao nhiêu mục giữ bấy nhiêu, đúng thứ tự file.
+    Các dòng trùng nội dung tự dùng chung cache (item_key theo nội dung) nên không tốn thêm credit."""
+    out = []
+    for idx, it in enumerate(items):
         ten, ts = it.get("ten", "").strip(), it.get("thongso", "").strip()
         if not ten or ten.lower() in ("tên hàng hóa",):
             continue
         ts = re.sub(r"[ \t]+", " ", ts)
-        key = _norm(ten) + "|" + _norm(ts)
-        if key in seen:  # dòng lặp (Cat6, RJ45, SFP...)
-            seen[key]["stt"] += f", {it.get('stt', '')}"
-            continue
-        rec = {"stt": str(it.get("stt", "")).strip(), "ten": ten, "thongso": ts}
-        rec["id"] = item_key(rec)
-        seen[key] = rec
+        rec = {"stt": str(it.get("stt", "")).strip() or str(idx + 1), "ten": ten, "thongso": ts}
+        rec["id"] = item_key(rec) + f"#{idx}"  # id duy nhất theo vị trí, cache key vẫn theo nội dung
         out.append(rec)
     return out

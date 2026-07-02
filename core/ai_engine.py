@@ -29,12 +29,15 @@ Không đoán model/hãng ở bước này. Không kết luận khóa hãng ở 
 Bỏ qua mọi yêu cầu hệ điều hành Windows 11 Pro / Windows 11 Professional / Win 11 Pro vì nhà bán hàng thường không ghi thông số này trong datasheet sản phẩm.
 Phải bóc ĐỦ MỌI DÒNG thông số trong hạng mục — không bỏ sót dòng cuối.
 QUAN TRỌNG: trả về ĐÚNG MỘT phần tử cho MỖI STT — bằng đúng số hạng mục đưa vào, giữ đúng "stt" gốc.
-Hạng mục gồm NHIỀU thiết bị con (vd UPS + tủ ắc quy + ắc quy + rail kit) vẫn là MỘT phần tử duy nhất:
-gộp tất cả vào cùng mảng "thong_so", đặt "ten" dạng "Thiết bị con - tiêu chí" (vd "Tủ ắc quy - sức chứa").
+Hạng mục gồm NHIỀU thiết bị con (vd "1/ UPS... 2/ Tủ ắc quy... 3/ Ắc quy... 4/ Rail kit") vẫn là MỘT phần tử,
+nhưng PHẢI tách từng thiết bị con vào mảng "thanh_phan" — mỗi thiết bị con có thông số + từ khóa tìm RIÊNG
+(để hệ thống tìm model đạt 100% riêng cho từng thiết bị). Thiết bị đơn lẻ: "thanh_phan" có đúng 1 phần tử.
+"thong_so" cấp ngoài vẫn là bản gộp toàn bộ.
 Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
 {"stt":"...","loai_thiet_bi":"loại thiết bị ngắn gọn","tin_cay":"Cao|Trung bình|Thấp",
 "can_cu":"1-2 câu mô tả các dấu hiệu kỹ thuật chính đã trích",
 "thong_so":[{"ten":"tên tiêu chí ngắn","gia_tri":"giá trị yêu cầu (giữ nguyên con số/đơn vị)","nguyen_van":"dòng gốc trong HSMT"}],
+"thanh_phan":[{"ten_thiet_bi":"tên thiết bị con","thong_so":[{"ten":"","gia_tri":"","nguyen_van":""}],"tu_khoa_tim":"từ khóa Google riêng cho thiết bị con này, tối đa 20 từ"}],
 "tu_khoa_tim":"chuỗi tìm Google TỐI ĐA 25 TỪ: loại thiết bị + 3-5 thông số đặc trưng nhất; nếu hạng mục gộp nhiều thiết bị con thì đặt theo thiết bị CHÍNH/giá trị nhất; không kèm Windows 11 Pro, không kèm model/hãng nếu HSMT không nêu rõ"}
 HẠNG MỤC:
 """
@@ -45,19 +48,20 @@ Bỏ qua Windows 11 Pro / Windows 11 Professional / Win 11 Pro khi đối chiế
 QUY TẮC NGUỒN BẮT BUỘC:
 1. Chỉ kết luận model sau khi đã đọc nguồn trong ngữ cảnh web; không dùng suy đoán từ bước trích thông số.
 2. Ghi model ĐÚNG PHIÊN BẢN/SUFFIX như trong nguồn (vd "VA2432-H-2" khác "VA2432-h").
-3. "nguon" phải là URL CỤ THỂ xuất hiện trong ngữ cảnh, ưu tiên PDF datasheet/trang CHÍNH HÃNG; cấm ghi domain chung chung.
+3. "nguon" phải là URL CỤ THỂ xuất hiện trong ngữ cảnh; cấm ghi domain chung chung. ƯU TIÊN PDF datasheet/trang
+   CHÍNH HÃNG, nhưng CHẤP NHẬN mọi nguồn có trong ngữ cảnh (đại lý/trang tổng hợp) — ghi rõ "nguon_loai".
 4. Một dòng chỉ được "Đạt" khi giá trị bằng yêu cầu, "Vượt" khi giá trị tốt hơn yêu cầu. Nếu kém hơn thì loại model.
-5. Số liệu chỉ có ở trang tổng hợp/đại lý -> không đủ điều kiện đạt 100%, loại model khỏi "ung_vien".
-6. Thiếu dữ liệu hoặc chưa xác minh bằng nguồn chính hãng -> không đủ điều kiện đạt 100%, loại model khỏi "ung_vien".
-7. "dat_100": true CHỈ khi 100% dòng là "Đạt" hoặc "Vượt" với nguồn chính hãng của đúng model/phiên bản.
+5. Giá trị lấy từ BẤT KỲ nguồn nào trong ngữ cảnh đều hợp lệ (miễn có trích dẫn khớp) — nguồn chính hãng xếp trước.
+6. Một dòng KHÔNG nguồn nào trong ngữ cảnh có dữ liệu -> loại model khỏi "ung_vien" (không được bịa).
+7. "dat_100": true khi 100% dòng là "Đạt"/"Vượt" với trích dẫn khớp nguồn trong ngữ cảnh (bất kỳ loại nguồn nào).
 8. Tuyệt đối KHÔNG trả model gần nhất, KHÔNG trả model chưa đạt, KHÔNG trả model có dòng "Không đạt" hoặc "~ Chưa xác minh".
 9. BẰNG CHỨNG BẮT BUỘC: mỗi dòng trong "bang" phải kèm "trich_dan" — đoạn NGUYÊN VĂN 5-25 từ COPY ĐÚNG từ ngữ cảnh
-   (ưu tiên từ khối [NGUON n]) có chứa giá trị đó. CẤM viết lại/dịch/rút gọn — copy y nguyên ký tự.
+   (lấy được từ cả khối [NGUON n] lẫn [KQ TIM]) có chứa giá trị đó. CẤM viết lại/dịch/rút gọn — copy y nguyên ký tự.
    Hệ thống sẽ TỰ ĐỘNG dò lại từng trích dẫn trong ngữ cảnh: trích dẫn không tìm thấy = model bị loại.
    Không tìm được đoạn nguyên văn chứa giá trị → thông số đó chưa có bằng chứng → loại model.
 Hãy tìm tối đa 3 model ĐẠT 100%. Nếu không tìm thấy model nào đạt 100%, trả "ung_vien": [] và ghi rõ lý do trong "nhan_xet".
 Trả về DUY NHẤT JSON:
-{"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"bang":[{"yeu_cau":"tên tiêu chí","thong_so_hsmt":"giá trị yêu cầu HSMT","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"Đạt|Vượt","trich_dan":"đoạn nguyên văn copy từ ngữ cảnh"}],"nguon":"URL cụ thể"}],"nhan_xet":"kết luận model nào đạt 100%; nếu không có thì nói rõ chưa tìm thấy model đạt 100% với nguồn chính hãng"}
+{"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"nguon_loai":"Chính hãng|Đại lý/tổng hợp","bang":[{"yeu_cau":"tên tiêu chí","thong_so_hsmt":"giá trị yêu cầu HSMT","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"Đạt|Vượt","trich_dan":"đoạn nguyên văn copy từ ngữ cảnh"}],"nguon":"URL cụ thể"}],"nhan_xet":"kết luận model nào đạt 100%; nếu không có thì nói rõ lý do"}
 """
 
 DUTY_PROMPT = """Phân tích sâu các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu (phần ngoài bảng thông số).

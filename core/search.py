@@ -1,37 +1,80 @@
 # -*- coding: utf-8 -*-
-"""Web search: Serper.dev (mặc định, gl=vn) + tải nội dung top-3. Adapter đổi được Tavily."""
-import re, requests
+"""Web search: Serper/Tavily -> collect result snippets -> fetch official pages and PDF datasheets."""
+import re
+
+import requests
+
+
+def _is_windows_11_pro(text):
+    return bool(
+        re.search(r"\bwindows\s*11\s*(pro|professional)\b", text or "", re.I)
+        or re.search(r"\bwin\s*11\s*pro\b", text or "", re.I)
+    )
+
+
+def _strip_windows_terms(text):
+    text = re.sub(r"\bWindows\s*11\s*(Pro|Professional)\b", " ", text or "", flags=re.I)
+    text = re.sub(r"\bWin\s*11\s*Pro\b", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def serper(query, key, num=5):
-    r = requests.post("https://google.serper.dev/search", timeout=30,
-                      headers={"X-API-KEY": key, "Content-Type": "application/json"},
-                      json={"q": query, "gl": "vn", "hl": "vi", "num": num})
+    r = requests.post(
+        "https://google.serper.dev/search",
+        timeout=30,
+        headers={"X-API-KEY": key, "Content-Type": "application/json"},
+        json={"q": query, "gl": "vn", "hl": "vi", "num": num},
+    )
     r.raise_for_status()
-    return [{"title": o.get("title", ""), "link": o.get("link", ""), "snippet": o.get("snippet", "")}
-            for o in r.json().get("organic", [])[:num]]
+    return [
+        {"title": o.get("title", ""), "link": o.get("link", ""), "snippet": o.get("snippet", "")}
+        for o in r.json().get("organic", [])[:num]
+    ]
 
 
 def tavily(query, key, num=5):
-    r = requests.post("https://api.tavily.com/search", timeout=40,
-                      json={"api_key": key, "query": query, "max_results": num, "include_answer": False})
+    r = requests.post(
+        "https://api.tavily.com/search",
+        timeout=40,
+        json={"api_key": key, "query": query, "max_results": num, "include_answer": False},
+    )
     r.raise_for_status()
-    return [{"title": o.get("title", ""), "link": o.get("url", ""), "snippet": o.get("content", "")[:400]}
-            for o in r.json().get("results", [])[:num]]
+    return [
+        {"title": o.get("title", ""), "link": o.get("url", ""), "snippet": o.get("content", "")[:400]}
+        for o in r.json().get("results", [])[:num]
+    ]
 
 
-AGGREGATORS = ("displayspecifications", "tiki.", "shopee", "lazada", "sieuthi", "phongvu", "gearvn",
-               "cellphones", "dienmay", "hoangduong", "phucquang", "cpn.vn", "wikipedia", "amazon.",
-               "anphat", "tinhoc", "memoryzone", "hanoicomputer", "nguyenkim")
+AGGREGATORS = (
+    "displayspecifications",
+    "tiki.",
+    "shopee",
+    "lazada",
+    "sieuthi",
+    "phongvu",
+    "gearvn",
+    "cellphones",
+    "dienmay",
+    "hoangduong",
+    "phucquang",
+    "cpn.vn",
+    "wikipedia",
+    "amazon.",
+    "anphat",
+    "tinhoc",
+    "memoryzone",
+    "hanoicomputer",
+    "nguyenkim",
+)
 
 
 def is_official(link):
-    """Heuristic: không thuộc danh sách trang tổng hợp/đại lý → coi là trang hãng."""
+    """Heuristic: domains outside the aggregator/dealer list are treated as official/vendor sources."""
     try:
-        d = link.split("/")[2].lower()
+        domain = link.split("/")[2].lower()
     except IndexError:
         return False
-    return not any(a in d for a in AGGREGATORS)
+    return not any(a in domain for a in AGGREGATORS)
 
 
 def fetch_page(url, limit=3000):
@@ -46,9 +89,9 @@ def fetch_page(url, limit=3000):
 
 
 def fetch_pdf(url, limit=4000):
-    """Tải và trích văn bản PDF datasheet (PyMuPDF)."""
     try:
         import fitz
+
         r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         doc = fitz.open(stream=r.content, filetype="pdf")
         txt = " ".join(pg.get_text() for pg in doc[:6])
@@ -58,14 +101,25 @@ def fetch_pdf(url, limit=4000):
 
 
 def build_context(item, ident, cfg, counter=None):
-    """Luồng mới: tìm SẢN PHẨM THEO THÔNG SỐ (từ khóa do AI chuẩn hóa) → lấy datasheet/link hãng
-    (tải nội dung tối đa 3 trang) → trả ngữ cảnh cho AI đối chiếu từng dòng."""
+    """Search products by normalized specs, then fetch datasheets/official links for AI verification."""
     provider, key = cfg.get("search_provider", "serper"), cfg.get("search_key", "")
     if provider == "off" or not key:
         return ""
     fn = serper if provider == "serper" else tavily
-    kw = (ident.get("tu_khoa_tim") or f"{item['ten']} {item['thongso'][:60]}").strip()
-    queries = [kw, kw + " datasheet thông số kỹ thuật", kw + " datasheet filetype:pdf"]
+
+    specs = [
+        s for s in (ident.get("thong_so") or [])
+        if not _is_windows_11_pro(f"{s.get('ten', '')} {s.get('gia_tri', '')}")
+    ]
+    spec_terms = " ".join(f"{s.get('ten', '')} {s.get('gia_tri', '')}" for s in specs[:6]).strip()
+    base = (ident.get("tu_khoa_tim") or f"{ident.get('loai_thiet_bi', item['ten'])} {spec_terms}").strip()
+    kw = re.sub(r"\s+", " ", _strip_windows_terms(base))[:350]
+    queries = [
+        kw,
+        kw + " datasheet thong so ky thuat",
+        kw + " datasheet filetype:pdf",
+    ]
+
     ctx, all_res = [], []
     for q in queries:
         try:
@@ -74,12 +128,12 @@ def build_context(item, ident, cfg, counter=None):
                 counter["used"] = counter.get("used", 0) + 1
             all_res.extend(res)
             for o in res[:4]:
-                tag = "CHÍNH HÃNG" if is_official(o["link"]) else "trang tổng hợp/đại lý"
+                tag = "CHINH HANG" if is_official(o["link"]) else "trang tong hop/dai ly"
                 ctx.append(f"[{o['title']}] ({tag}) {o['link']}\n{o['snippet']}")
         except Exception as e:
-            ctx.append(f"(lỗi tra cứu: {e})")
+            ctx.append(f"(loi tra cuu: {e})")
+
     if cfg.get("fetch_pages", True):
-        # Ưu tiên đọc sâu: PDF chính hãng → PDF khác → trang HTML chính hãng
         pdfs = [o for o in all_res if ".pdf" in o["link"].lower()]
         pdfs.sort(key=lambda o: not is_official(o["link"]))
         pages = [o for o in all_res if ".pdf" not in o["link"].lower() and is_official(o["link"])]
@@ -87,7 +141,7 @@ def build_context(item, ident, cfg, counter=None):
         for o in pdfs[:2]:
             txt = fetch_pdf(o["link"])
             if txt:
-                tag = "PDF DATASHEET CHÍNH HÃNG" if is_official(o["link"]) else "PDF (nguồn tổng hợp)"
+                tag = "PDF DATASHEET CHINH HANG" if is_official(o["link"]) else "PDF (nguon tong hop)"
                 ctx.append(f"{tag} ({o['link']}): {txt}")
                 fetched += 1
         for o in pages:
@@ -95,6 +149,6 @@ def build_context(item, ident, cfg, counter=None):
                 break
             txt = fetch_page(o["link"])
             if txt:
-                ctx.append(f"TRANG CHÍNH HÃNG ({o['link']}): {txt}")
+                ctx.append(f"TRANG CHINH HANG ({o['link']}): {txt}")
                 fetched += 1
     return "\n---\n".join(ctx)

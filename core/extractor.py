@@ -17,7 +17,7 @@ def _docx(path):
                 lines.append(t)
         elif child.tag == qn('w:tbl'):
             tbl = Table(child, doc)
-            rows = [[" ".join(p.text.strip() for p in c.paragraphs if p.text.strip()) for c in r.cells] for r in tbl.rows]
+            rows = [["\n".join(p.text.strip() for p in c.paragraphs if p.text.strip()) for c in r.cells] for r in tbl.rows]
             lines.append("\n".join(" | ".join(r) for r in rows))
             hdr = " ".join(rows[0]).lower() if rows else ""
             if "tên hàng" in hdr or "thông số" in hdr:

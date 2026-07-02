@@ -14,8 +14,8 @@ def risk_level(ident):
     return "THẤP"
 
 
-def run(items, cfg, ai, progress=lambda s, p: None, counter=None):
-    """Pipeline chính. Trả {items:[{...ident, so_sanh}], duties, usage}."""
+def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
+    """Pipeline chính. on_item(row): callback bắn từng dòng ngay khi xong để UI hiển thị live."""
     ttl = int(cfg.get("ttl_days", 30))
     results, todo = {}, []
     for it in items:
@@ -35,6 +35,15 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None):
         for b, r in zip(batch, arr):
             cache.put(item_key(b, "identify"), r)
             results[b["id"]] = r
+            if on_item:  # hiện ngay kết quả nhận diện, chưa cần chờ so sánh
+                r0 = dict(b); r0["ident"] = r; r0["risk"] = risk_level(r)
+                on_item(r0)
+    # Các mục trúng cache nhận diện cũng bắn lên UI ngay
+    if on_item:
+        for it in items:
+            if it not in todo and it["id"] in results:
+                r0 = dict(it); r0["ident"] = results[it["id"]]; r0["risk"] = risk_level(r0["ident"])
+                on_item(r0)
     # So sánh tương đương (nếu bật)
     out = []
     do_cmp = cfg.get("compare", True)
@@ -54,4 +63,6 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None):
                 cache.put(ck, cmp_hit)
             row["so_sanh"] = cmp_hit
         out.append(row)
+        if on_item:  # cập nhật dòng này ngay khi so sánh xong
+            on_item(row)
     return out

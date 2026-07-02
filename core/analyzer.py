@@ -126,8 +126,8 @@ CORP_DOMAINS = ("se.com", "pfu.ricoh", "ricoh.com", "fujitsu.com", "hpe.com", "h
 
 
 def _check_official_source(result):
-    """Nguồn của ứng viên phải là DOMAIN CHÍNH HÃNG: domain chứa tên hãng (santak.* cho Santak).
-    Trang đại lý kiểu 'upschinhhang.com' dù tên nghe 'chính hãng' vẫn bị loại."""
+    """PHÂN LOẠI nguồn (không loại): domain khớp tên hãng → 'Chính hãng', còn lại → 'Đại lý/tổng hợp'.
+    Chính hãng được ƯU TIÊN xếp trước; nguồn đại lý vẫn hợp lệ nhưng gắn nhãn khuyến nghị xác nhận."""
     if not isinstance(result, dict):
         return result
     for candidate in result.get("ung_vien", []) or []:
@@ -137,15 +137,13 @@ def _check_official_source(result):
         except IndexError:
             domain = url.lower()
         brand = _norm_brand(candidate.get("hang", ""))
-        flat = re.sub(r"[^a-z0-9]", "", domain)
-        # domain phải BẮT ĐẦU các nhãn bằng tên hãng (santak.com.vn ✓) — 'upschinhhang' chứa chữ nhưng không phải hãng
         labels = domain.split(".")
         ok = bool(brand) and (labels[0].replace("-", "") == brand or any(l.replace("-", "") == brand for l in labels[:2]))
         ok = ok or any(c in domain for c in CORP_DOMAINS)
-        if not ok:
-            candidate["dat_100"] = False
-            candidate["ly_do_loai"] = (candidate.get("ly_do_loai", "") +
-                                       f" | Nguồn '{domain}' không phải domain chính hãng {candidate.get('hang', '')} — cần datasheet từ site hãng").strip(" |")
+        candidate["nguon_loai"] = "Chính hãng" if ok else "Đại lý/tổng hợp — nên xin datasheet hãng xác nhận"
+    # Ưu tiên chính hãng lên đầu danh sách
+    result["ung_vien"] = sorted(result.get("ung_vien") or [],
+                                key=lambda u: 0 if str(u.get("nguon_loai", "")).startswith("Chính hãng") else 1)
     return result
 
 
@@ -176,7 +174,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     results, todo = {}, []
     for it in items:
         wait_if_needed()
-        hit = cache.get(item_key(it, "specs_v6"), ttl)
+        hit = cache.get(item_key(it, "specs_v7"), ttl)
         if hit:
             results[it["id"]] = hit
         else:
@@ -227,7 +225,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                                    "tin_cay": "Thấp", "can_cu": "Lỗi AI: thiếu phần tử STT trong JSON trả về",
                                    "tu_khoa_tim": b.get("ten", "")})
             if "lỗi ai" not in str(r.get("can_cu", "")).lower():
-                cache.put(item_key(b, "specs_v6"), r)
+                cache.put(item_key(b, "specs_v7"), r)
             results[b["id"]] = r
             if on_item:
                 r0 = dict(b)
@@ -243,20 +241,46 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                 r0["risk"] = risk_level(r0["ident"])
                 on_item(r0)
 
+    # ===== TÁCH THIẾT BỊ CON: hạng mục nhiều thành phần → hàng riêng 1a/1b/1c, mỗi hàng tìm model 100% riêng =====
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    work = []
+    for it in items:
+        spec = _filter_specs(results.get(it["id"], {}))
+        comps = [c for c in (spec.get("thanh_phan") or []) if (c or {}).get("thong_so")]
+        if len(comps) >= 2:
+            for ci, comp in enumerate(comps[:26]):
+                sub = dict(it)
+                sub["stt"] = f"{it['stt']}{letters[ci]}"
+                sub["ten"] = f"{it['ten']} — {comp.get('ten_thiet_bi', '') or f'Thành phần {ci + 1}'}"
+                sub["id"] = it["id"] if ci == 0 else f"{it['id']}#{ci}"
+                sub_specs = comp.get("thong_so") or []
+                sub["thongso"] = "\n".join(
+                    (s.get("nguyen_van") or f"{s.get('ten', '')}: {s.get('gia_tri', '')}") for s in sub_specs)
+                sub["ident"] = _filter_specs({
+                    "stt": sub["stt"], "loai_thiet_bi": comp.get("ten_thiet_bi", ""),
+                    "tin_cay": spec.get("tin_cay", ""), "can_cu": spec.get("can_cu", ""),
+                    "thong_so": sub_specs,
+                    "tu_khoa_tim": comp.get("tu_khoa_tim") or comp.get("ten_thiet_bi", ""),
+                })
+                work.append(sub)
+        else:
+            row0 = dict(it)
+            row0["ident"] = spec
+            work.append(row0)
+
     out = []
     do_cmp = cfg.get("compare", True)
-    for n, it in enumerate(items):
+    for n, it in enumerate(work):
         wait_if_needed()
-        spec = _filter_specs(results.get(it["id"], {}))
-        row = dict(it)
-        row["ident"] = spec
+        spec = it["ident"]
+        row = it
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v9")
+            ck = item_key(it, "compare_v10")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
-                progress(f"Serper tìm & AI đối chiếu đạt 100%: {it['ten'][:30]}...", 40 + int(55 * n / max(len(items), 1)))
+                progress(f"Serper tìm & AI đối chiếu đạt 100%: {it['ten'][:30]}...", 40 + int(55 * n / max(len(work), 1)))
                 ctx = websearch.build_context(it, spec, cfg, counter)
                 try:
                     raw_cmp = ai.compare(it, spec, ctx)

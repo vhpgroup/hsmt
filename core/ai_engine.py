@@ -28,13 +28,17 @@ Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
 HẠNG MỤC:
 """
 
-CMP_PROMPT = """NHIỆM VỤ: đối chiếu TỪNG DÒNG thông số yêu cầu (JSON chuẩn hóa ở trên) với các sản phẩm xuất hiện
-trong NGỮ CẢNH WEB (kết quả tìm theo thông số + nội dung datasheet/trang hãng đã tải). Chọn tối đa 3 model
-(ưu tiên hãng KHÁC hãng tham chiếu, bán tại Việt Nam) và KẾT LUẬN model nào ĐẠT 100% — mọi dòng "✔ Đạt"/"✔ Vượt".
-CHỈ dùng giá trị có trong ngữ cảnh/datasheet; thiếu dữ liệu thì ghi "~ Chưa xác minh", TUYỆT ĐỐI không bịa.
-Nếu không model nào đạt 100%, trả model gần nhất và đánh dấu "✘ Không đạt" đúng dòng thiếu.
-Trả về DUY NHẤT JSON:
-{"ung_vien":[{"model":"","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt|~ Chưa xác minh"}],"nguon":"URL datasheet/trang hãng"}],"nhan_xet":"kết luận model nào đạt 100%, dòng nào là điểm khóa"}
+CMP_PROMPT = """NHIỆM VỤ: đối chiếu TỪNG DÒNG thông số yêu cầu (JSON ở trên) với các sản phẩm trong NGỮ CẢNH WEB.
+QUY TẮC NGUỒN (BẮT BUỘC — mọi kết luận phải truy được về nguồn):
+1. Ghi model ĐÚNG PHIÊN BẢN/SUFFIX như trong nguồn (vd "VA2432-H-2" khác "VA2432-h" — khác suffix là khác thông số, cấm viết gọn).
+2. "nguon" phải là URL CỤ THỂ xuất hiện trong ngữ cảnh, ưu tiên PDF datasheet/trang CHÍNH HÃNG; cấm ghi domain chung chung.
+3. Một dòng chỉ được "✔ Đạt"/"✔ Vượt" khi giá trị lấy từ PDF/trang CHÍNH HÃNG của ĐÚNG model + phiên bản đó;
+   số liệu chỉ có ở trang tổng hợp/đại lý → tối đa "~ Chưa xác minh (chưa có nguồn chính hãng)".
+4. Thiếu dữ liệu → "~ Chưa xác minh". TUYỆT ĐỐI không bịa, không suy từ model "gần giống".
+5. "dat_100": true CHỈ khi 100% dòng ✔ với nguồn chính hãng.
+Chọn tối đa 3 model (ưu tiên hãng KHÁC hãng tham chiếu, bán tại Việt Nam). Không model nào đạt 100% →
+trả model gần nhất, đánh dấu "✘ Không đạt"/"~" đúng dòng. Trả về DUY NHẤT JSON:
+{"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số","gia_tri":"giá trị thực tế (theo nguồn)","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt|~ Chưa xác minh"}],"nguon":"URL cụ thể"}],"nhan_xet":"model nào đạt 100% với nguồn chính hãng; dòng nào còn ~ cần xin datasheet PDF từ nhà phân phối"}
 """
 
 DUTY_PROMPT = """Phân tích SÂU các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu (phần ngoài bảng thông số).

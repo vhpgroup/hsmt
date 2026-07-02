@@ -29,12 +29,17 @@ class Worker(QThread):
             ai = AIEngine(cfg)
             counter = {"used": 0}
             results = analyzer.run(items, cfg, ai, lambda s, p: self.progress.emit(s, p), counter)
-            self.progress.emit("Phân tích nghĩa vụ nhà thầu…", 96)
+            self.progress.emit("Trích thông tin dự án…", 94)
+            try:
+                proj = ai.project_info(raw["text"])
+            except Exception:
+                proj = {}
+            self.progress.emit("Phân tích sâu nghĩa vụ nhà thầu…", 97)
             try:
                 duties = ai.duties(raw["text"])
             except Exception:
                 duties = []
-            self.done.emit({"meta": raw["meta"], "items": results, "duties": duties,
+            self.done.emit({"meta": raw["meta"], "items": results, "duties": duties, "proj": proj,
                             "usage": ai.usage, "searches": counter["used"]})
         except Exception as e:
             self.failed.emit(str(e))
@@ -54,11 +59,16 @@ class MainWindow(QMainWindow):
             a = tb.addAction(text); a.triggered.connect(fn)
         self.pbar = QProgressBar(); self.plabel = QLabel("Chưa có file — bấm Import hồ sơ")
         tabs = QTabWidget()
+        # Tab 0: Thông tin dự án
+        t0 = QWidget(); v0 = QVBoxLayout(t0)
+        self.proj_view = QTextBrowser()
+        self.proj_view.setHtml("<p>Thông tin dự án sẽ hiển thị sau khi phân tích.</p>")
+        v0.addWidget(self.proj_view)
         # Tab 1: Phân tích hồ sơ mời thầu
         t1 = QWidget(); v1 = QVBoxLayout(t1)
         self.info = QLabel("🏥 Thông tin gói thầu: (sẽ hiện sau khi phân tích)"); self.info.setWordWrap(True)
         self.id_table = widgets.make_table(widgets.ID_HEADERS)
-        self.duties_view = QTextBrowser(); self.duties_view.setMaximumHeight(180)
+        self.duties_view = QTextBrowser(); self.duties_view.setMaximumHeight(280)
         v1.addWidget(self.info); v1.addWidget(QLabel("📊 Bảng kết quả nhận diện Model/Hãng:"))
         v1.addWidget(self.id_table, 1)
         v1.addWidget(QLabel("📑 Nghĩa vụ nhà thầu:")); v1.addWidget(self.duties_view)
@@ -66,6 +76,7 @@ class MainWindow(QMainWindow):
         t2 = QWidget(); v2 = QVBoxLayout(t2)
         self.cmp_table = widgets.make_table(widgets.CMP_HEADERS)
         v2.addWidget(self.cmp_table)
+        tabs.addTab(t0, "🏥 Thông tin dự án")
         tabs.addTab(t1, "📋 Phân tích hồ sơ mời thầu")
         tabs.addTab(t2, "⚖️ So sánh sản phẩm tương đương")
         central = QWidget(); v = QVBoxLayout(central)
@@ -101,9 +112,26 @@ class MainWindow(QMainWindow):
                           f"🔬 Phương pháp: trích thông số → AI nhận diện → web xác minh → so sánh tương đương")
         widgets.fill_identify(self.id_table, data["items"])
         widgets.fill_compare(self.cmp_table, data["items"])
-        self.duties_view.setHtml("".join(f"<b>{g.get('nhom','')}</b><ul>" +
-                                         "".join(f"<li>{b}</li>" for b in g.get("noi_dung", [])) + "</ul>"
-                                         for g in data.get("duties", [])))
+        p = data.get("proj", {})
+        prow = "".join(f"<tr><td width=180><b>{k}</b></td><td>{p.get(f,'')}</td></tr>" for k, f in [
+            ("Chủ đầu tư", "chu_dau_tu"), ("Địa chỉ", "dia_chi"), ("Tên gói thầu", "ten_goi_thau"),
+            ("Nguồn vốn", "nguon_von"), ("Phương thức LCNT", "phuong_thuc"), ("Loại hợp đồng", "loai_hop_dong"),
+            ("Thời gian thực hiện", "thoi_gian_thuc_hien"), ("Địa điểm", "dia_diem")])
+        khac = "".join(f"<li>{x}</li>" for x in p.get("khac", []))
+        self.proj_view.setHtml(f"<h2>🏥 Thông tin dự án</h2><table border=1 cellspacing=0 cellpadding=5>{prow}</table>"
+                               f"{'<h3>Thông tin khác</h3><ul>'+khac+'</ul>' if khac else ''}")
+        html = ""
+        for g in data.get("duties", []):
+            html += f"<h3>{g.get('nhom','')}</h3>"
+            if g.get("yeu_cau"):
+                html += "<b>Yêu cầu:</b><ul>" + "".join(f"<li>{b}</li>" for b in g["yeu_cau"]) + "</ul>"
+            if g.get("tai_lieu_can_nop"):
+                html += "<b>📎 Tài liệu cần nộp:</b><ul>" + "".join(f"<li>{b}</li>" for b in g["tai_lieu_can_nop"]) + "</ul>"
+            if g.get("rui_ro_bi_loai"):
+                html += f"<p style='color:#b02222'>⚠️ <b>Rủi ro bị loại:</b> {g['rui_ro_bi_loai']}</p>"
+            if g.get("checklist"):
+                html += "<b>✅ Checklist:</b><ul>" + "".join(f"<li>{b}</li>" for b in g["checklist"]) + "</ul>"
+        self.duties_view.setHtml(html or "<p>Không trích được nghĩa vụ.</p>")
         u = data.get("usage", {})
         self.st.setText(f"🟢 Token: {u.get('in',0)} vào / {u.get('out',0)} ra · 🔎 Serper: {data.get('searches',0)} lượt")
 

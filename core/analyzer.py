@@ -33,7 +33,8 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
         except Exception as e:
             arr = [{"stt": b["stt"], "model": f"Lỗi AI: {e}", "hang": "", "tin_cay": "Thấp", "can_cu": "", "khoa_hang": False} for b in batch]
         for b, r in zip(batch, arr):
-            cache.put(item_key(b, "identify"), r)
+            if "lỗi ai" not in str(r.get("model", "")).lower():  # KHÔNG cache kết quả lỗi
+                cache.put(item_key(b, "identify"), r)
             results[b["id"]] = r
             if on_item:  # hiện ngay kết quả nhận diện, chưa cần chờ so sánh
                 r0 = dict(b); r0["ident"] = r; r0["risk"] = risk_level(r)
@@ -58,9 +59,9 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None):
                 ctx = websearch.build_context(it, ident, cfg, counter)
                 try:
                     cmp_hit = ai.compare(it, ident, ctx)
+                    cache.put(ck, cmp_hit)  # chỉ cache khi thành công
                 except Exception as e:
                     cmp_hit = {"tieu_chi": [], "ung_vien": [], "nhan_xet": f"Lỗi: {e}"}
-                cache.put(ck, cmp_hit)
             row["so_sanh"] = cmp_hit
         out.append(row)
         if on_item:  # cập nhật dòng này ngay khi so sánh xong

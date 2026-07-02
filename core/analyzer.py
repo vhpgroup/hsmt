@@ -88,6 +88,28 @@ def _is_passing_candidate(candidate):
     return True
 
 
+VERIFY_CTX_LIMIT = 24000  # phải khớp với giới hạn ngữ cảnh trong ai_engine.compare
+
+
+def _verify_quotes(result, ctx):
+    """Kiểm chứng máy: từng 'trich_dan' phải xuất hiện NGUYÊN VĂN trong ngữ cảnh đã đưa cho AI.
+    Trích dẫn không khớp = AI bịa/nhớ nhầm → loại ứng viên (dat_100=False)."""
+    if not isinstance(result, dict) or not ctx:
+        return result
+    hay = _norm(ctx[:VERIFY_CTX_LIMIT])
+    for candidate in result.get("ung_vien", []) or []:
+        bad = []
+        for row in candidate.get("bang", []) or []:
+            q = _norm(row.get("trich_dan", ""))
+            if len(q) < 8 or q not in hay:
+                bad.append(row.get("yeu_cau", "?"))
+                row["danh_gia"] = "~ Chưa xác minh (trích dẫn không khớp nguồn)"
+        if bad:
+            candidate["dat_100"] = False
+            candidate["ly_do_loai"] = "Trích dẫn không tìm thấy trong nguồn: " + ", ".join(bad[:5])
+    return result
+
+
 def _only_100_percent(result, spec):
     result = _normalize_compare_rows(result, spec)
     kept = [u for u in result.get("ung_vien", []) if _is_passing_candidate(u)]
@@ -114,10 +136,20 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         else:
             todo.append(it)
 
-    for i in range(0, len(todo), 6):
+    # Lô động: tối đa 6 mục VÀ tổng ≤6.000 ký tự — tránh JSON output bị cắt với mục dài
+    batches, _cur, _size = [], [], 0
+    for _it in todo:
+        _ln = len(_it.get("thongso", ""))
+        if _cur and (len(_cur) >= 6 or _size + _ln > 6000):
+            batches.append(_cur); _cur, _size = [], 0
+        _cur.append(_it); _size += _ln
+    if _cur:
+        batches.append(_cur)
+    _done = 0
+    for _bi, batch in enumerate(batches):
         wait_if_needed()
-        batch = todo[i:i + 6]
-        progress(f"AI trích thông số lô {i//6+1}/{(len(todo)+5)//6}...", 10 + int(30 * i / max(len(todo), 1)))
+        progress(f"AI trích thông số lô {_bi+1}/{len(batches)}...", 10 + int(30 * _done / max(len(todo), 1)))
+        _done += len(batch)
         try:
             ai_specs = ai.extract_specs_batch(batch)
             arr = [_filter_specs(x) for x in ai_specs]
@@ -161,14 +193,16 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row["ident"] = spec
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v6")
+            ck = item_key(it, "compare_v7")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
                 progress(f"Serper tìm & AI đối chiếu đạt 100%: {it['ten'][:30]}...", 40 + int(55 * n / max(len(items), 1)))
                 ctx = websearch.build_context(it, spec, cfg, counter)
                 try:
-                    cmp_hit = _only_100_percent(ai.compare(it, spec, ctx), spec)
+                    raw_cmp = ai.compare(it, spec, ctx)
+                    raw_cmp = _verify_quotes(raw_cmp, ctx)  # máy dò lại từng trích dẫn — bịa là loại
+                    cmp_hit = _only_100_percent(raw_cmp, spec)
                     cache.put(ck, cmp_hit)
                 except Exception as e:
                     cmp_hit = {"tieu_chi": [], "ung_vien": [], "nhan_xet": f"Lỗi: {e}"}

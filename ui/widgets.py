@@ -4,7 +4,7 @@ from PySide6.QtGui import QColor
 
 ID_HEADERS = ["STT", "Tên hàng hóa", "Thông số kỹ thuật chính (theo E-HSMT)",
               "KẾT QUẢ: Model + Hãng", "Độ tin cậy", "Căn cứ nhận diện", "Nguồn tra cứu"]
-CMP_HEADERS = ["STT", "Hạng mục", "Model ứng viên (Hãng)", "Đánh giá tiêu chí", "Kết luận", "Rủi ro khóa hãng"]
+CMP_HEADERS = ["STT", "Hạng mục", "Model ứng viên (Hãng)", "Yêu cầu HSMT", "Giá trị của model", "Đánh giá", "Đạt 100%?"]
 COLORS = {"Cao": "#e2f3e6", "Trung bình": "#fdf3d8", "Thấp": "#fde8e8",
           "CAO": "#fde8e8", "TRUNG BÌNH": "#fdf3d8", "THẤP": "#e2f3e6"}
 
@@ -47,9 +47,13 @@ def fill_compare(t, results):
         if not ss:
             continue
         for u in ss.get("ung_vien", []):
-            row = t.rowCount(); t.insertRow(row)
-            vals = [r["stt"], r["ten"], f"{u.get('model','')} ({u.get('hang','')})",
-                    " ".join(u.get("marks", [])), u.get("ket_luan", ""), r.get("risk", "")]
-            for c, v in enumerate(vals):
-                t.setItem(row, c, _item(v, COLORS.get(r.get("risk")) if c == 5 else None))
+            tag = "ĐẠT 100%" if u.get("dat_100") else "Chưa đạt"
+            for b in u.get("bang", []):
+                row = t.rowCount(); t.insertRow(row)
+                dg = b.get("danh_gia", "")
+                bg = "#e2f3e6" if "Đạt" in dg or "Vượt" in dg else "#fde8e8"
+                vals = [r["stt"], r["ten"], f"{u.get('model','')} ({u.get('hang','')})",
+                        b.get("yeu_cau", ""), b.get("gia_tri", ""), dg, tag]
+                for c, v in enumerate(vals):
+                    t.setItem(row, c, _item(v, bg if c == 5 else ("#e2f3e6" if c == 6 and u.get("dat_100") else None)))
     t.resizeRowsToContents()

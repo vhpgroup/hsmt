@@ -130,7 +130,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     results, todo = {}, []
     for it in items:
         wait_if_needed()
-        hit = cache.get(item_key(it, "specs_v5"), ttl)
+        hit = cache.get(item_key(it, "specs_v6"), ttl)
         if hit:
             results[it["id"]] = hit
         else:
@@ -165,10 +165,23 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                 })
                 for b in batch
             ]
-        for b, r in zip(batch, arr):
+        # GHÉP THEO STT (không ghép theo vị trí) — chống lệch cột khi AI tách 1 mục thành nhiều phần tử
+        by_stt = {}
+        for r in arr:
+            key = str(r.get("stt", "")).strip().rstrip(".")
+            if key in by_stt:  # mục bị tách (UPS/tủ/ắc quy...) → gộp thông số về đúng STT
+                by_stt[key]["thong_so"] = (by_stt[key].get("thong_so") or []) + (r.get("thong_so") or [])
+            else:
+                by_stt[key] = r
+        for b in batch:
             wait_if_needed()
+            r = by_stt.get(str(b.get("stt", "")).strip().rstrip("."))
+            if r is None:
+                r = _filter_specs({"stt": b["stt"], "loai_thiet_bi": b.get("ten", ""), "thong_so": [],
+                                   "tin_cay": "Thấp", "can_cu": "Lỗi AI: thiếu phần tử STT trong JSON trả về",
+                                   "tu_khoa_tim": b.get("ten", "")})
             if "lỗi ai" not in str(r.get("can_cu", "")).lower():
-                cache.put(item_key(b, "specs_v5"), r)
+                cache.put(item_key(b, "specs_v6"), r)
             results[b["id"]] = r
             if on_item:
                 r0 = dict(b)
@@ -193,7 +206,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row["ident"] = spec
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v7")
+            ck = item_key(it, "compare_v8")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()

@@ -11,9 +11,11 @@ def _rows(data):
         model = f"{d.get('model','')} — {d.get('hang','')}".strip(" —")
         if d.get("goi_y_hang_pho_thong"):
             model += f" (gợi ý: {d['goi_y_hang_pho_thong']})"
-        src = (it.get("so_sanh") or {}).get("nhan_xet", "")
+        uvs = (it.get("so_sanh") or {}).get("ung_vien", [])
+        src = "; ".join(dict.fromkeys(u.get("nguon", "") for u in uvs if u.get("nguon"))) \
+              or (it.get("so_sanh") or {}).get("nhan_xet", "")
         rows.append([it["stt"], it["ten"], it["thongso"][:400], model,
-                     d.get("tin_cay", ""), d.get("can_cu", ""), src[:200]])
+                     d.get("tin_cay", ""), d.get("can_cu", ""), src[:250]])
     return rows
 
 

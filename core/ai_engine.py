@@ -13,8 +13,12 @@ Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
 HẠNG MỤC:
 """
 
-CMP_PROMPT = """Dựa trên thông số yêu cầu (tối thiểu) và ngữ cảnh tra cứu web (nếu có), đề xuất 3-5 sản phẩm TƯƠNG ĐƯƠNG từ hãng KHÁC.
-Trả về DUY NHẤT JSON: {"tieu_chi":["C1..","C2.."],"ung_vien":[{"model":"","hang":"","marks":["✓|✗|~",...],"ket_luan":"","ghi_chu_nguon":""}],"nhan_xet":"tiêu chí nào khóa hãng"}
+CMP_PROMPT = """NHIỆM VỤ: Tách thông số yêu cầu thành TỪNG DÒNG tiêu chí riêng. Tìm model của hãng KHÁC đáp ứng 100% —
+nghĩa là MỌI dòng đều "✔ Đạt" hoặc "✔ Vượt" (đối chiếu datasheet trong ngữ cảnh web, không suy đoán).
+Chỉ liệt kê tối đa 3 ứng viên, ưu tiên hàng bán tại Việt Nam. Nếu KHÔNG có model nào đạt 100%,
+trả về model gần nhất, đánh dấu "✘ Không đạt" đúng dòng thiếu và ghi rõ trong nhan_xet.
+Trả về DUY NHẤT JSON:
+{"ung_vien":[{"model":"","hang":"","dat_100":true,"bang":[{"yeu_cau":"1 dòng thông số HSMT","gia_tri":"giá trị thực tế của model","danh_gia":"✔ Đạt|✔ Vượt|✘ Không đạt"}],"nguon":"URL/domain datasheet"}],"nhan_xet":"tiêu chí nào khóa hãng, ứng viên nào đạt 100%"}
 """
 
 DUTY_PROMPT = """Phân tích các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu sau (ngoài bảng thông số).

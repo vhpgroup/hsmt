@@ -30,7 +30,24 @@ def put(key, value):
 
 
 def clear():
-    c = _conn(); c.execute("DELETE FROM kv"); c.commit(); c.close()
+    c = _conn(); c.execute("DELETE FROM kv WHERE k NOT LIKE 'cnt_%'"); c.commit(); c.close()
+
+
+def bump_counter(name, n=1):
+    """Cộng dồn bộ đếm bền (không bị xóa cache / không hết hạn). Trả về tổng mới."""
+    c = _conn()
+    row = c.execute("SELECT v FROM kv WHERE k=?", ("cnt_" + name,)).fetchone()
+    val = (int(json.loads(row[0])) if row else 0) + int(n)
+    c.execute("INSERT OR REPLACE INTO kv VALUES(?,?,?)", ("cnt_" + name, json.dumps(val), time.time()))
+    c.commit(); c.close()
+    return val
+
+
+def counter(name):
+    c = _conn()
+    row = c.execute("SELECT v FROM kv WHERE k=?", ("cnt_" + name,)).fetchone()
+    c.close()
+    return int(json.loads(row[0])) if row else 0
 
 
 def load_config():

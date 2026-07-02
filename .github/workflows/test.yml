@@ -1,0 +1,24 @@
+name: Smoke Test (real API)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (headless — không cần PySide6)
+        run: pip install python-docx PyMuPDF requests reportlab openpyxl
+      - name: Run smoke test với API thật
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          AI_MODEL: gpt-4.1-mini
+          SMOKE_ITEMS: "3"
+        run: python tests/smoke_test.py

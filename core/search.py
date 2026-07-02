@@ -77,7 +77,7 @@ def is_official(link):
     return not any(a in domain for a in AGGREGATORS)
 
 
-def fetch_page(url, limit=3000):
+def fetch_page(url, limit=8000):
     try:
         r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         html = r.text
@@ -88,13 +88,13 @@ def fetch_page(url, limit=3000):
         return ""
 
 
-def fetch_pdf(url, limit=4000):
+def fetch_pdf(url, limit=12000):
     try:
         import fitz
 
         r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         doc = fitz.open(stream=r.content, filetype="pdf")
-        txt = " ".join(pg.get_text() for pg in doc[:6])
+        txt = " ".join(pg.get_text() for pg in doc[:10])
         return re.sub(r"\s+", " ", txt).strip()[:limit]
     except Exception:
         return ""
@@ -113,14 +113,15 @@ def build_context(item, ident, cfg, counter=None):
     ]
     spec_terms = " ".join(f"{s.get('ten', '')} {s.get('gia_tri', '')}" for s in specs[:6]).strip()
     base = (ident.get("tu_khoa_tim") or f"{ident.get('loai_thiet_bi', item['ten'])} {spec_terms}").strip()
-    kw = re.sub(r"\s+", " ", _strip_windows_terms(base))[:350]
+    # Google chỉ đọc 32 từ đầu của truy vấn — giới hạn ~28 từ để cả 3 biến thể truy vấn còn hiệu lực
+    kw = " ".join(re.sub(r"\s+", " ", _strip_windows_terms(base)).split()[:28])
     queries = [
         kw,
         kw + " datasheet thong so ky thuat",
         kw + " datasheet filetype:pdf",
     ]
 
-    ctx, all_res = [], []
+    deep, snip, all_res = [], [], []
     for q in queries:
         try:
             res = fn(q, key)
@@ -129,26 +130,27 @@ def build_context(item, ident, cfg, counter=None):
             all_res.extend(res)
             for o in res[:4]:
                 tag = "CHINH HANG" if is_official(o["link"]) else "trang tong hop/dai ly"
-                ctx.append(f"[{o['title']}] ({tag}) {o['link']}\n{o['snippet']}")
+                snip.append(f"[KQ TIM] ({tag}) {o['link']}\n{o['snippet']}")
         except Exception as e:
-            ctx.append(f"(loi tra cuu: {e})")
+            snip.append(f"(loi tra cuu: {e})")
 
     if cfg.get("fetch_pages", True):
         pdfs = [o for o in all_res if ".pdf" in o["link"].lower()]
         pdfs.sort(key=lambda o: not is_official(o["link"]))
         pages = [o for o in all_res if ".pdf" not in o["link"].lower() and is_official(o["link"])]
-        fetched = 0
+        n_src = 0
         for o in pdfs[:2]:
             txt = fetch_pdf(o["link"])
             if txt:
+                n_src += 1
                 tag = "PDF DATASHEET CHINH HANG" if is_official(o["link"]) else "PDF (nguon tong hop)"
-                ctx.append(f"{tag} ({o['link']}): {txt}")
-                fetched += 1
+                deep.append(f"[NGUON {n_src}] {tag} ({o['link']}): {txt}")
         for o in pages:
-            if fetched >= 3:
+            if n_src >= 3:
                 break
             txt = fetch_page(o["link"])
             if txt:
-                ctx.append(f"TRANG CHINH HANG ({o['link']}): {txt}")
-                fetched += 1
-    return "\n---\n".join(ctx)
+                n_src += 1
+                deep.append(f"[NGUON {n_src}] TRANG CHINH HANG ({o['link']}): {txt}")
+    # QUAN TRỌNG: nội dung đọc sâu (datasheet) đặt LÊN ĐẦU để không bị cắt khi giới hạn ngữ cảnh
+    return "\n---\n".join(deep + snip)

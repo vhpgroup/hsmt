@@ -11,6 +11,7 @@ from . import widgets
 
 class Worker(QThread):
     progress = Signal(str, int)
+    item_ready = Signal(dict)
     done = Signal(dict)
     failed = Signal(str)
 
@@ -28,7 +29,8 @@ class Worker(QThread):
                 raise RuntimeError("Không tìm thấy bảng hạng mục trong file")
             ai = AIEngine(cfg)
             counter = {"used": 0}
-            results = analyzer.run(items, cfg, ai, lambda s, p: self.progress.emit(s, p), counter)
+            results = analyzer.run(items, cfg, ai, lambda s, p: self.progress.emit(s, p), counter,
+                                   on_item=self.item_ready.emit)
             self.progress.emit("Trích thông tin dự án…", 94)
             try:
                 proj = ai.project_info(raw["text"])
@@ -68,17 +70,20 @@ class MainWindow(QMainWindow):
         t1 = QWidget(); v1 = QVBoxLayout(t1)
         self.info = QLabel("🏥 Thông tin gói thầu: (sẽ hiện sau khi phân tích)"); self.info.setWordWrap(True)
         self.id_table = widgets.make_table(widgets.ID_HEADERS)
-        self.duties_view = QTextBrowser(); self.duties_view.setMaximumHeight(280)
+        self.duties_view = QTextBrowser()
         v1.addWidget(self.info); v1.addWidget(QLabel("📊 Bảng kết quả nhận diện Model/Hãng:"))
         v1.addWidget(self.id_table, 1)
-        v1.addWidget(QLabel("📑 Nghĩa vụ nhà thầu:")); v1.addWidget(self.duties_view)
         # Tab 2: So sánh tương đương
         t2 = QWidget(); v2 = QVBoxLayout(t2)
         self.cmp_table = widgets.make_table(widgets.CMP_HEADERS)
         v2.addWidget(self.cmp_table)
+        # Tab 3: Nghĩa vụ nhà thầu
+        t3 = QWidget(); v3 = QVBoxLayout(t3)
+        v3.addWidget(self.duties_view)
         tabs.addTab(t0, "🏥 Thông tin dự án")
         tabs.addTab(t1, "📋 Phân tích hồ sơ mời thầu")
         tabs.addTab(t2, "⚖️ So sánh sản phẩm tương đương")
+        tabs.addTab(t3, "📑 Nghĩa vụ nhà thầu")
         central = QWidget(); v = QVBoxLayout(central)
         v.addWidget(self.plabel); v.addWidget(self.pbar); v.addWidget(tabs, 1)
         self.setCentralWidget(central)
@@ -98,11 +103,21 @@ class MainWindow(QMainWindow):
         if not cache.load_config().get("api_key"):
             QMessageBox.information(self, "Thiếu API key", "Vào ⚙️ Cài đặt điền API key AI trước.")
             return self.settings()
+        self.live_items = {}
+        self.id_table.setRowCount(0); self.cmp_table.setRowCount(0)
         self.worker = Worker(self.file_path)
         self.worker.progress.connect(lambda s, p: (self.plabel.setText(s), self.pbar.setValue(p)))
+        self.worker.item_ready.connect(self.on_item)
         self.worker.done.connect(self.on_done)
         self.worker.failed.connect(lambda e: QMessageBox.critical(self, "Lỗi", e))
         self.worker.start()
+
+    def on_item(self, row):
+        """Hiển thị live: cập nhật/thêm dòng ngay khi phân tích xong (không chờ hết)."""
+        self.live_items[row["id"]] = row
+        ordered = list(self.live_items.values())
+        widgets.fill_identify(self.id_table, ordered)
+        widgets.fill_compare(self.cmp_table, ordered)
 
     def on_done(self, data):
         self.data = data
@@ -133,7 +148,14 @@ class MainWindow(QMainWindow):
                 html += "<b>✅ Checklist:</b><ul>" + "".join(f"<li>{b}</li>" for b in g["checklist"]) + "</ul>"
         self.duties_view.setHtml(html or "<p>Không trích được nghĩa vụ.</p>")
         u = data.get("usage", {})
-        self.st.setText(f"🟢 Token: {u.get('in',0)} vào / {u.get('out',0)} ra · 🔎 Serper: {data.get('searches',0)} lượt")
+        cfg = cache.load_config()
+        if cfg.get("search_provider", "serper") == "serper":
+            total = cache.bump_counter("serper", data.get("searches", 0))
+        else:
+            total = cache.counter("serper")
+        quota = int(cfg.get("serper_quota", 2500))
+        self.st.setText(f"🟢 Token: {u.get('in',0)} vào / {u.get('out',0)} ra · "
+                        f"🔎 Serper: {total}/{quota:,} credit đã dùng (lần này +{data.get('searches',0)})")
 
     def preview(self):
         if not self.data:

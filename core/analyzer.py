@@ -91,17 +91,22 @@ def _is_passing_candidate(candidate):
 VERIFY_CTX_LIMIT = 24000  # phải khớp với giới hạn ngữ cảnh trong ai_engine.compare
 
 
+def _norm_loose(text):
+    """Chuẩn hóa 'lỏng' để so trích dẫn: bỏ dấu cách/ký tự đặc biệt — chịu được '10KVA / 10KW' vs '10KVA/10KW'."""
+    return re.sub(r"[^a-z0-9à-ỹ]", "", (text or "").lower())
+
+
 def _verify_quotes(result, ctx):
     """Kiểm chứng máy: từng 'trich_dan' phải xuất hiện NGUYÊN VĂN trong ngữ cảnh đã đưa cho AI.
     Trích dẫn không khớp = AI bịa/nhớ nhầm → loại ứng viên (dat_100=False)."""
     if not isinstance(result, dict) or not ctx:
         return result
-    hay = _norm(ctx[:VERIFY_CTX_LIMIT])
+    hay = _norm_loose(ctx[:VERIFY_CTX_LIMIT])
     for candidate in result.get("ung_vien", []) or []:
         bad = []
         for row in candidate.get("bang", []) or []:
-            q = _norm(row.get("trich_dan", ""))
-            if len(q) < 8 or q not in hay:
+            q = _norm_loose(row.get("trich_dan", ""))
+            if len(q) < 12 or q not in hay:
                 bad.append(row.get("yeu_cau", "?"))
                 row["danh_gia"] = "~ Chưa xác minh (trích dẫn không khớp nguồn)"
         if bad:
@@ -110,13 +115,54 @@ def _verify_quotes(result, ctx):
     return result
 
 
+def _norm_brand(brand):
+    import unicodedata
+    s = unicodedata.normalize("NFD", brand or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+# Ngoại lệ: hãng thuộc tập đoàn có domain khác tên (APC→Schneider, Ricoh/Fujitsu scanner→PFU...)
+CORP_DOMAINS = ("se.com", "pfu.ricoh", "ricoh.com", "fujitsu.com", "hpe.com", "hp.com", "mi.com")
+
+
+def _check_official_source(result):
+    """Nguồn của ứng viên phải là DOMAIN CHÍNH HÃNG: domain chứa tên hãng (santak.* cho Santak).
+    Trang đại lý kiểu 'upschinhhang.com' dù tên nghe 'chính hãng' vẫn bị loại."""
+    if not isinstance(result, dict):
+        return result
+    for candidate in result.get("ung_vien", []) or []:
+        url = str(candidate.get("nguon", ""))
+        try:
+            domain = url.split("/")[2].lower()
+        except IndexError:
+            domain = url.lower()
+        brand = _norm_brand(candidate.get("hang", ""))
+        flat = re.sub(r"[^a-z0-9]", "", domain)
+        # domain phải BẮT ĐẦU các nhãn bằng tên hãng (santak.com.vn ✓) — 'upschinhhang' chứa chữ nhưng không phải hãng
+        labels = domain.split(".")
+        ok = bool(brand) and (labels[0].replace("-", "") == brand or any(l.replace("-", "") == brand for l in labels[:2]))
+        ok = ok or any(c in domain for c in CORP_DOMAINS)
+        if not ok:
+            candidate["dat_100"] = False
+            candidate["ly_do_loai"] = (candidate.get("ly_do_loai", "") +
+                                       f" | Nguồn '{domain}' không phải domain chính hãng {candidate.get('hang', '')} — cần datasheet từ site hãng").strip(" |")
+    return result
+
+
 def _only_100_percent(result, spec):
     result = _normalize_compare_rows(result, spec)
-    kept = [u for u in result.get("ung_vien", []) if _is_passing_candidate(u)]
+    all_cands = result.get("ung_vien", []) or []
+    kept = [u for u in all_cands if _is_passing_candidate(u)]
     out = dict(result)
     out["ung_vien"] = kept
     if not kept:
-        out["nhan_xet"] = result.get("nhan_xet") or "Không tìm thấy model đạt 100% với nguồn chính hãng."
+        # KHÔNG giữ nhan_xet cũ của AI (dễ mâu thuẫn kiểu "đã tìm thấy X đạt 100%") — ghi đúng thực tế sau kiểm chứng
+        dropped = [u for u in all_cands if u.get("ly_do_loai")]
+        if dropped:
+            reasons = "; ".join(f"{u.get('model', '?')} bị loại ({u.get('ly_do_loai', '')})" for u in dropped[:3])
+            out["nhan_xet"] = f"Không có model đạt 100% sau kiểm chứng máy. {reasons}"
+        else:
+            out["nhan_xet"] = result.get("nhan_xet") or "Không tìm thấy model đạt 100% với nguồn chính hãng."
     return out
 
 
@@ -206,7 +252,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row["ident"] = spec
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v8")
+            ck = item_key(it, "compare_v9")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
@@ -215,6 +261,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                 try:
                     raw_cmp = ai.compare(it, spec, ctx)
                     raw_cmp = _verify_quotes(raw_cmp, ctx)  # máy dò lại từng trích dẫn — bịa là loại
+                    raw_cmp = _check_official_source(raw_cmp)  # domain nguồn phải là chính hãng
                     cmp_hit = _only_100_percent(raw_cmp, spec)
                     cache.put(ck, cmp_hit)
                 except Exception as e:

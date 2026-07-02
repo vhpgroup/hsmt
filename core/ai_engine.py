@@ -27,11 +27,12 @@ SPEC_PROMPT = """Bạn là chuyên gia phân tích hồ sơ mời thầu thiết
 Với MỖI hạng mục dưới đây, CHỈ trích và chuẩn hóa thông số kỹ thuật HSMT thành JSON.
 Không đoán model/hãng ở bước này. Không kết luận khóa hãng ở bước này.
 Bỏ qua mọi yêu cầu hệ điều hành Windows 11 Pro / Windows 11 Professional / Win 11 Pro vì nhà bán hàng thường không ghi thông số này trong datasheet sản phẩm.
+Phải bóc ĐỦ MỌI DÒNG thông số trong hạng mục — không bỏ sót dòng cuối.
 Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
 {"stt":"...","loai_thiet_bi":"loại thiết bị ngắn gọn","tin_cay":"Cao|Trung bình|Thấp",
 "can_cu":"1-2 câu mô tả các dấu hiệu kỹ thuật chính đã trích",
-"thong_so":[{"ten":"tên tiêu chí ngắn","gia_tri":"giá trị yêu cầu (giữ nguyên con số/đơn vị)"}],
-"tu_khoa_tim":"chuỗi tìm Google tối ưu: loại thiết bị + 3-5 thông số đặc trưng nhất, không kèm Windows 11 Pro, không kèm model/hãng nếu HSMT không nêu rõ"}
+"thong_so":[{"ten":"tên tiêu chí ngắn","gia_tri":"giá trị yêu cầu (giữ nguyên con số/đơn vị)","nguyen_van":"dòng gốc trong HSMT"}],
+"tu_khoa_tim":"chuỗi tìm Google TỐI ĐA 25 TỪ: loại thiết bị + 3-5 thông số đặc trưng nhất; nếu hạng mục gộp nhiều thiết bị con thì đặt theo thiết bị CHÍNH/giá trị nhất; không kèm Windows 11 Pro, không kèm model/hãng nếu HSMT không nêu rõ"}
 HẠNG MỤC:
 """
 
@@ -47,9 +48,13 @@ QUY TẮC NGUỒN BẮT BUỘC:
 6. Thiếu dữ liệu hoặc chưa xác minh bằng nguồn chính hãng -> không đủ điều kiện đạt 100%, loại model khỏi "ung_vien".
 7. "dat_100": true CHỈ khi 100% dòng là "Đạt" hoặc "Vượt" với nguồn chính hãng của đúng model/phiên bản.
 8. Tuyệt đối KHÔNG trả model gần nhất, KHÔNG trả model chưa đạt, KHÔNG trả model có dòng "Không đạt" hoặc "~ Chưa xác minh".
+9. BẰNG CHỨNG BẮT BUỘC: mỗi dòng trong "bang" phải kèm "trich_dan" — đoạn NGUYÊN VĂN 5-25 từ COPY ĐÚNG từ ngữ cảnh
+   (ưu tiên từ khối [NGUON n]) có chứa giá trị đó. CẤM viết lại/dịch/rút gọn — copy y nguyên ký tự.
+   Hệ thống sẽ TỰ ĐỘNG dò lại từng trích dẫn trong ngữ cảnh: trích dẫn không tìm thấy = model bị loại.
+   Không tìm được đoạn nguyên văn chứa giá trị → thông số đó chưa có bằng chứng → loại model.
 Hãy tìm tối đa 3 model ĐẠT 100%. Nếu không tìm thấy model nào đạt 100%, trả "ung_vien": [] và ghi rõ lý do trong "nhan_xet".
 Trả về DUY NHẤT JSON:
-{"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"bang":[{"yeu_cau":"tên tiêu chí","thong_so_hsmt":"giá trị yêu cầu HSMT","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"Đạt|Vượt"}],"nguon":"URL cụ thể"}],"nhan_xet":"kết luận model nào đạt 100%; nếu không có thì nói rõ chưa tìm thấy model đạt 100% với nguồn chính hãng"}
+{"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"bang":[{"yeu_cau":"tên tiêu chí","thong_so_hsmt":"giá trị yêu cầu HSMT","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"Đạt|Vượt","trich_dan":"đoạn nguyên văn copy từ ngữ cảnh"}],"nguon":"URL cụ thể"}],"nhan_xet":"kết luận model nào đạt 100%; nếu không có thì nói rõ chưa tìm thấy model đạt 100% với nguồn chính hãng"}
 """
 
 DUTY_PROMPT = """Phân tích sâu các NGHĨA VỤ NHÀ THẦU trong văn bản hồ sơ mời thầu (phần ngoài bảng thông số).
@@ -132,7 +137,8 @@ class AIEngine:
         return json.loads(raw)
 
     def extract_specs_batch(self, items):
-        block = "\n".join(f"- STT {it['stt']} | {it['ten']} | {it['thongso'][:1200]}" for it in items)
+        # 3000 ký tự đủ trọn thông số mục dài nhất (báo cháy ~1.900) — không cắt mất dòng cuối
+        block = "\n".join(f"- STT {it['stt']} | {it['ten']} | {it['thongso'][:3000]}" for it in items)
         return self.parse_json(self.chat(SPEC_PROMPT + block))
 
     def identify_batch(self, items):
@@ -145,7 +151,7 @@ class AIEngine:
             f"Hạng mục: {item['ten']}\n"
             f"Loại thiết bị: {spec.get('loai_thiet_bi', '')}\n"
             f"THÔNG SỐ YÊU CẦU (JSON chuẩn hóa, đã bỏ Windows 11 Pro nếu có): {spec_block}\n"
-            f"NGỮ CẢNH WEB (Serper tìm theo thông số + datasheet/link hãng):\n{search_ctx[:9000]}\n"
+            f"NGỮ CẢNH WEB (Serper tìm theo thông số + datasheet/link hãng):\n{search_ctx[:24000]}\n"
             + CMP_PROMPT
         )
         return self.parse_json(self.chat(p))

@@ -198,7 +198,9 @@ class AIEngine:
         self.model = cfg.get("model") or DEFAULT_MODEL
         self.base = resolve_base_url(self.model, cfg.get("base_url"))
         self.key = cfg.get("api_key", "")
-        self.extract_timeout = int(cfg.get("extract_timeout", 90))
+        # 150s: output JSON strict của mục dài (báo cháy ~40 dòng) cần dư địa sinh token;
+        # lô đã thu nhỏ (solo mục dài) nên hiếm khi chạm — đây là lưới an toàn thứ hai sau bisect-retry
+        self.extract_timeout = int(cfg.get("extract_timeout", 150))
         self.compare_timeout = int(cfg.get("compare_timeout", 120))   # ngữ cảnh 90K cần trần thoáng hơn 60s
         self.usage = {"in": 0, "out": 0}
         self._usage_lock = threading.Lock()      # nhiều luồng cùng cộng usage khi pipeline song song

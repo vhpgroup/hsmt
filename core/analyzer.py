@@ -489,13 +489,22 @@ def _searchable_spec(spec):
     return out, bool(keep), len(keep) < len(rows)
 
 
-def _make_batches(todo, max_items=6, max_chars=6000):
-    """B2 fix — lô ĐỘNG đúng nghĩa: tối đa max_items mục VÀ ~max_chars ký tự thông số mỗi lô.
-    (Bug cũ: điều kiện `len(_cur) >= 1` luôn đúng → mỗi lô đúng 1 mục, 30 STT = 30 lượt gọi AI extract.)
-    Structured Outputs strict đã chặn JSON cụt nên gộp lô an toàn."""
+def _make_batches(todo, max_items=3, max_chars=2000, solo_chars=800):
+    """Lô ĐỘNG AN TOÀN TIMEOUT (rút kinh nghiệm run thật 36 STT: lô 6 mục × mục dài → output
+    JSON strict 10-15K token → sinh >90s → ReadTimeout → CẢ LÔ rơi về thông số rỗng, 21/39 hàng hỏng).
+    Luật mới:
+    - Mục DÀI (> solo_chars ký tự) đi LÔ RIÊNG MỘT MÌNH — không kéo mục khác chết chung
+    - Lô ghép chỉ nhận mục ngắn: tối đa max_items mục VÀ tổng ≤ max_chars ký tự
+    Tốc độ giữ nguyên nhờ các lô chạy SONG SONG (parallel_ai) — gộp to không còn cần thiết."""
     batches, cur, size = [], [], 0
     for it in todo:
         ln = len(it.get("thongso", ""))
+        if ln > solo_chars:
+            if cur:
+                batches.append(cur)
+                cur, size = [], 0
+            batches.append([it])          # mục dài: một mình một lô
+            continue
         if cur and (len(cur) >= max_items or size + ln > max_chars):
             batches.append(cur)
             cur, size = [], 0
@@ -545,6 +554,11 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
             ai_specs = ai.extract_specs_batch(batch)
             arr = [_filter_specs(_adapt_ai_spec_schema(x)) for x in ai_specs]
         except Exception as e:
+            if len(batch) > 1:
+                # BISECT RETRY: lô lỗi (thường ReadTimeout vì output dài) → chia đôi chạy lại,
+                # lỗi cuối cùng chỉ còn dính đúng 1 mục thay vì thiêu cả lô
+                mid = len(batch) // 2
+                return run_batch(batch[:mid]) + run_batch(batch[mid:])
             arr = [_fallback_spec(b, f"Lỗi AI: {e}") for b in batch]
         # GHÉP THEO STT (không ghép theo vị trí) — chống lệch cột khi AI tách 1 mục thành nhiều phần tử
         by_stt = {}
@@ -648,6 +662,12 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row = it
         row["risk"] = risk_level(spec)
         search_spec, has_searchable, has_nonproduct = _searchable_spec(spec)
+        all_rows = spec.get("thong_so") or []
+        has_vattu = any((r.get("loai_du_lieu") or "") == "vat_tu_thi_cong" for r in all_rows)
+        if not has_searchable and all_rows and not has_vattu:
+            # Toàn dòng yeu_cau_chung (phần mềm/tính năng mô tả chữ — vd Sophos) KHÔNG phải dịch vụ:
+            # vẫn tìm + đối chiếu bằng toàn bộ dòng gốc (bài học run thật: STT 36 bị giết nhầm)
+            search_spec, has_searchable = dict(spec), True
         if (
             spec.get("trang_thai_thong_so") == "khong_co_thong_so"
             and spec.get("loai_hang_muc") == "phu_kien_di_kem"
@@ -659,15 +679,15 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                 "can_review": True,
                 "trang_thai": "N/A - cho xac nhan",
             }
-        elif do_cmp and (spec.get("thong_so") and not has_searchable):
-            # B3-1: hàng con toàn dòng phi-sản-phẩm (nhân công/vật tư phụ/lắp đặt) → không tốn lượt search nào
+        elif do_cmp and (all_rows and not has_searchable and has_vattu):
+            # B3-1: hàng con toàn nhân công/vật tư phụ/lắp đặt THẬT → không tốn lượt search nào
             row["so_sanh"] = {
                 "ung_vien": [],
                 "nhan_xet": "Dịch vụ/thi công/vật tư phụ — không áp dụng tìm model, tính trọn gói theo khối lượng.",
                 "trang_thai": "N/A - dịch vụ/thi công",
             }
         elif do_cmp and (has_searchable or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v17")   # bump version: logic chấm đổi (máy so số, khong_ro, ctx 90K)
+            ck = item_key(it, "compare_v18")   # v18: xóa sạch kết quả rác của run bị timeout extract
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
@@ -737,10 +757,13 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                     if has_nonproduct:
                         cmp_hit["ghi_chu_pham_vi"] = ("Đã loại dòng vật tư phụ/nhân công khỏi tiêu chí 100% "
                                                       "(không phải thông số datasheet).")
-                    try:
-                        cache.put(ck, cmp_hit)
-                    except Exception:
-                        pass
+                    # KHÔNG cache kết quả so sánh khi bóc tách đã lỗi (spec rỗng → kết quả rác):
+                    # chạy lại sau khi extract thành công sẽ tính lại sạch sẽ
+                    if "lỗi ai" not in str(spec.get("can_cu", "")).lower():
+                        try:
+                            cache.put(ck, cmp_hit)
+                        except Exception:
+                            pass
                 except Exception as e:
                     cmp_hit = {"tieu_chi": [], "ung_vien": [], "nhan_xet": f"Lỗi: {e}"}
             row["so_sanh"] = cmp_hit

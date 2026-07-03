@@ -13,9 +13,14 @@ HEADERS = [
 
 
 def _best_model(it):
-    uvs = (it.get("so_sanh") or {}).get("ung_vien", [])
+    ss = it.get("so_sanh") or {}
+    uvs = ss.get("ung_vien", [])
     if not uvs:
-        if it.get("so_sanh"):
+        if ss:
+            be = ss.get("best_effort")
+            if be:
+                return (f"⚠ CẦN REVIEW — cao nhất {be.get('model','')} ({be.get('hang','')}) "
+                        f"~{be.get('phan_tram','?')}%, thiếu: {', '.join(be.get('thieu', [])[:4])}")
             return "Không tìm thấy model đạt 100%"
         return "Đã chuẩn hóa thông số, chưa có kết luận model"
     best = uvs[0]

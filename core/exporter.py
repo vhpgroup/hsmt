@@ -88,7 +88,10 @@ def export_docx(data, path):
             doc.add_paragraph(ss.get("nhan_xet", "Không tìm thấy model đạt 100%."))
             continue
         for u in ss["ung_vien"]:
-            doc.add_paragraph(f"{u.get('model', '')} ({u.get('hang', '')}) - ĐẠT 100% - Nguồn: {u.get('nguon', '')}",
+            extra = f" [{u.get('nguon_loai', '')}]" if u.get("nguon_loai") else ""
+            if u.get("nhan_hsmt"):
+                extra += f" — {u['nhan_hsmt']}"
+            doc.add_paragraph(f"{u.get('model', '')} ({u.get('hang', '')}) - ĐẠT 100%{extra} - Nguồn: {u.get('nguon', '')}",
                               style="Heading 3")
             t2 = doc.add_table(rows=1, cols=4)
             t2.style = "Table Grid"

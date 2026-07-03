@@ -328,7 +328,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row = it
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v12")
+            ck = item_key(it, "compare_v13")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()

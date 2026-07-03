@@ -51,6 +51,11 @@ QUY TẮC NGUỒN BẮT BUỘC:
 3. "nguon" phải là URL CỤ THỂ xuất hiện trong ngữ cảnh; cấm ghi domain chung chung. ƯU TIÊN PDF datasheet/trang
    CHÍNH HÃNG, nhưng CHẤP NHẬN mọi nguồn có trong ngữ cảnh (đại lý/trang tổng hợp) — ghi rõ "nguon_loai".
 4. Một dòng chỉ được "Đạt" khi giá trị bằng yêu cầu, "Vượt" khi giá trị tốt hơn yêu cầu. Nếu kém hơn thì loại model.
+4a. BIỂU THỨC TƯƠNG ĐƯƠNG (coi là BẰNG, không chấm sai): "10KVA/10KW" tức PF=1.0 (kW/kVA); nits = cd/m²;
+    1000BASE-T = 1GbE = 10/100/1000; "≥250" thỏa bởi 250 hoặc 300; đổi đơn vị (mm↔cm, GHz↔MHz, Gbps↔Mbps);
+    số ắc quy × 12V ≈ điện áp DC (20×12V=240V=±120Vdc); từ đồng nghĩa (RJ45=8P8C, Cổng quang=SFP). Suy luận đơn vị/định nghĩa trước khi chấm.
+4b. "VƯỢT" CHỈ hợp lệ khi CÙNG LOẠI/CHUẨN. Số lớn hơn nhưng KHÁC loại KHÔNG phải "Vượt": cổng SFP+ 10G KHÔNG thay được
+    cổng SFP 1G/2.5G (khác module); RAM DDR5 khác DDR4 nếu HSMT chỉ định thế hệ; chuẩn nguồn/giao tiếp khác loại → ghi "Không đạt" (loại model), không tự cho là vượt.
 5. Giá trị lấy từ BẤT KỲ nguồn nào trong ngữ cảnh đều hợp lệ (miễn có trích dẫn khớp) — nguồn chính hãng xếp trước.
 6. Một dòng KHÔNG nguồn nào trong ngữ cảnh có dữ liệu -> loại model khỏi "ung_vien" (không được bịa).
 7. "dat_100": true khi 100% dòng là "Đạt"/"Vượt" với trích dẫn khớp nguồn trong ngữ cảnh (bất kỳ loại nguồn nào).

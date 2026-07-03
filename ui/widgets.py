@@ -112,9 +112,14 @@ def _spec_summary(spec):
 
 
 def _best_model(row):
-    candidates = (row.get("so_sanh") or {}).get("ung_vien", [])
+    ss = row.get("so_sanh") or {}
+    candidates = ss.get("ung_vien", [])
     if not candidates:
-        if row.get("so_sanh"):
+        if ss:
+            be = ss.get("best_effort")
+            if be:
+                return (f"⚠ CẦN REVIEW — cao nhất {be.get('model','')} ({be.get('hang','')}) "
+                        f"~{be.get('phan_tram','?')}%, thiếu: {', '.join(be.get('thieu', [])[:4])}")
             return "Không tìm thấy model đạt 100%"
         return "Đã chuẩn hóa thông số, chờ Serper + AI đối chiếu"
     best = candidates[0]

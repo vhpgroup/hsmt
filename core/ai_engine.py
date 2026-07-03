@@ -172,6 +172,22 @@ class AIEngine:
         )
         return self.parse_json(self.chat(p))
 
+    def recheck_lines(self, item, cand, missing_rows, ctx):
+        """Đối chiếu LẠI CHỈ các dòng còn thiếu bằng chứng cho MỘT model (không chạy lại toàn bộ)."""
+        lines = json.dumps(
+            [{"yeu_cau": r.get("yeu_cau", ""), "thong_so_hsmt": r.get("thong_so_hsmt", "")} for r in missing_rows],
+            ensure_ascii=False)
+        p = (
+            f"Model: {cand.get('model', '')} ({cand.get('hang', '')}) — hạng mục: {item['ten']}\n"
+            f"CHỈ đối chiếu lại các dòng SAU (không thêm dòng mới, không đổi model). Mỗi dòng cần giá trị thực tế của "
+            f"model + đánh giá (Đạt|Vượt|Không đạt|~ Chưa xác minh) + trích dẫn NGUYÊN VĂN copy từ ngữ cảnh.\n"
+            f"Áp dụng: biểu thức tương đương (10KVA/10KW=PF1.0, nits=cd/m²), đúng chiều ≥/≤, Vượt chỉ khi cùng loại.\n"
+            f"DÒNG CẦN ĐỐI CHIẾU: {lines}\n"
+            f"NGỮ CẢNH BỔ SUNG:\n{ctx[:14000]}\n"
+            'Trả về DUY NHẤT JSON: {"bang":[{"yeu_cau":"","thong_so_hsmt":"","gia_tri":"","danh_gia":"","trich_dan":""}]}'
+        )
+        return self.parse_json(self.chat(p))
+
     def duties(self, text):
         return self.parse_json(self.chat(DUTY_PROMPT + text[:15000]))
 

@@ -147,8 +147,33 @@ def _check_official_source(result):
     return result
 
 
-def _only_100_percent(result, spec):
+def _flag_hsmt_model(result, item):
+    """A+: gắn nhãn ứng viên TRÙNG model HSMT nhắm tới — CHỈ khi tên model/hãng khớp NGUYÊN VĂN
+    chuỗi trong ô thông số HSMT (dấu hiệu chắc chắn, không đoán). Hãng khác xếp TRƯỚC (ưu tiên thay thế)."""
+    if not isinstance(result, dict):
+        return result
+    hay = _norm_loose(item.get("thongso", ""))
+    for c in result.get("ung_vien", []) or []:
+        model_tokens = [t for t in re.split(r"[\s/\-]+", str(c.get("model", ""))) if len(_norm_loose(t)) >= 3]
+        model_hit = any(_norm_loose(t) in hay for t in model_tokens)
+        brand_hit = bool(_norm_loose(c.get("hang", ""))) and _norm_loose(c.get("hang", "")) in hay
+        c["trung_hsmt"] = bool(model_hit or brand_hit)
+        if c["trung_hsmt"]:
+            c["nhan_hsmt"] = "⚠ Trùng model HSMT nhắm tới (kiểm tra ràng buộc thương hiệu)"
+    # Hãng KHÁC (không trùng HSMT) xếp trước; giữ ưu tiên chính hãng trong từng nhóm
+    prev = result.get("ung_vien") or []
+    result["ung_vien"] = sorted(
+        prev,
+        key=lambda u: (1 if u.get("trung_hsmt") else 0,
+                       0 if str(u.get("nguon_loai", "")).startswith("Chính hãng") else 1),
+    )
+    return result
+
+
+def _only_100_percent(result, spec, item=None):
     result = _normalize_compare_rows(result, spec)
+    if item is not None:
+        result = _flag_hsmt_model(result, item)
     all_cands = result.get("ung_vien", []) or []
     kept = [u for u in all_cands if _is_passing_candidate(u)]
     out = dict(result)
@@ -276,7 +301,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row = it
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v10")
+            ck = item_key(it, "compare_v11")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
@@ -286,7 +311,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                     raw_cmp = ai.compare(it, spec, ctx)
                     raw_cmp = _verify_quotes(raw_cmp, ctx)  # máy dò lại từng trích dẫn — bịa là loại
                     raw_cmp = _check_official_source(raw_cmp)  # domain nguồn phải là chính hãng
-                    cmp_hit = _only_100_percent(raw_cmp, spec)
+                    cmp_hit = _only_100_percent(raw_cmp, spec, it)
                     cache.put(ck, cmp_hit)
                 except Exception as e:
                     cmp_hit = {"tieu_chi": [], "ung_vien": [], "nhan_xet": f"Lỗi: {e}"}

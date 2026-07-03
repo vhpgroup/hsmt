@@ -45,6 +45,26 @@ def tavily(query, key, num=5):
     ]
 
 
+def exa(query, key, num=5):
+    """Exa.ai — tìm ngữ nghĩa + trả kèm summary/highlights (nội dung đã bóc sẵn cho AI)."""
+    r = requests.post(
+        "https://api.exa.ai/search",
+        timeout=45,
+        headers={"x-api-key": key, "Content-Type": "application/json"},
+        json={"query": query, "numResults": num, "type": "auto",
+              "contents": {"summary": True, "highlights": {"numSentences": 5}}},
+    )
+    r.raise_for_status()
+    out = []
+    for o in r.json().get("results", [])[:num]:
+        snippet = o.get("summary") or " ".join(o.get("highlights", []) or []) or (o.get("text", "") or "")
+        out.append({"title": o.get("title", ""), "link": o.get("url", ""), "snippet": snippet[:800]})
+    return out
+
+
+PROVIDERS = {"serper": serper, "tavily": tavily, "exa": exa}
+
+
 AGGREGATORS = (
     "displayspecifications",
     "tiki.",
@@ -105,7 +125,9 @@ def build_context(item, ident, cfg, counter=None):
     provider, key = cfg.get("search_provider", "serper"), cfg.get("search_key", "")
     if provider == "off" or not key:
         return ""
-    fn = serper if provider == "serper" else tavily
+    fn = PROVIDERS.get(provider, serper)
+    num = int(cfg.get("results_per_query", 8))           # tăng độ sâu: 5 -> 8 kết quả/truy vấn
+    max_deep = int(cfg.get("max_deep_sources", 5))        # đọc sâu tối đa 5 nguồn (trước 3)
 
     specs = [
         s for s in (ident.get("thong_so") or [])
@@ -119,16 +141,21 @@ def build_context(item, ident, cfg, counter=None):
         kw,
         kw + " datasheet thong so ky thuat",
         kw + " datasheet filetype:pdf",
+        kw + " tuong duong thay the",   # truy vấn tìm hàng THAY THẾ (hãng khác)
     ]
 
-    deep, snip, all_res = [], [], []
+    deep, snip, all_res, seen = [], [], [], set()
     for q in queries:
         try:
-            res = fn(q, key)
+            res = fn(q, key, num)
             if counter is not None:
                 counter["used"] = counter.get("used", 0) + 1
-            all_res.extend(res)
-            for o in res[:4]:
+            for o in res:
+                if o["link"] in seen:   # khử trùng link giữa các truy vấn
+                    continue
+                seen.add(o["link"])
+                all_res.append(o)
+            for o in res[:5]:
                 tag = "CHINH HANG" if is_official(o["link"]) else "trang tong hop/dai ly"
                 snip.append(f"[KQ TIM] ({tag}) {o['link']}\n{o['snippet']}")
         except Exception as e:
@@ -136,21 +163,23 @@ def build_context(item, ident, cfg, counter=None):
 
     if cfg.get("fetch_pages", True):
         pdfs = [o for o in all_res if ".pdf" in o["link"].lower()]
-        pdfs.sort(key=lambda o: not is_official(o["link"]))
-        pages = [o for o in all_res if ".pdf" not in o["link"].lower() and is_official(o["link"])]
+        pdfs.sort(key=lambda o: not is_official(o["link"]))         # PDF chính hãng trước
+        pages = [o for o in all_res if ".pdf" not in o["link"].lower()]
+        pages.sort(key=lambda o: not is_official(o["link"]))         # trang chính hãng trước
         n_src = 0
-        for o in pdfs[:2]:
+        for o in pdfs[:3]:                                            # đọc tối đa 3 PDF (trước 2)
             txt = fetch_pdf(o["link"])
             if txt:
                 n_src += 1
                 tag = "PDF DATASHEET CHINH HANG" if is_official(o["link"]) else "PDF (nguon tong hop)"
                 deep.append(f"[NGUON {n_src}] {tag} ({o['link']}): {txt}")
         for o in pages:
-            if n_src >= 3:
+            if n_src >= max_deep:                                     # tổng tối đa 5 nguồn đọc sâu
                 break
             txt = fetch_page(o["link"])
             if txt:
                 n_src += 1
-                deep.append(f"[NGUON {n_src}] TRANG CHINH HANG ({o['link']}): {txt}")
+                tag = "TRANG CHINH HANG" if is_official(o["link"]) else "TRANG dai ly/tong hop"
+                deep.append(f"[NGUON {n_src}] {tag} ({o['link']}): {txt}")
     # QUAN TRỌNG: nội dung đọc sâu (datasheet) đặt LÊN ĐẦU để không bị cắt khi giới hạn ngữ cảnh
     return "\n---\n".join(deep + snip)

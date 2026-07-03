@@ -152,13 +152,20 @@ def fill_compare(t, results):
         for u in ss.get("ung_vien", []):
             if not u.get("dat_100"):
                 continue
+            # A+: tên model kèm nhãn loại nguồn + cảnh báo trùng model HSMT nhắm tới
+            model_cell = f"{u.get('model', '')} ({u.get('hang', '')})"
+            nguon_loai = u.get("nguon_loai", "")
+            if nguon_loai:
+                model_cell += f"\n[{nguon_loai}]"
+            if u.get("nhan_hsmt"):
+                model_cell += f"\n{u['nhan_hsmt']}"
             for b in u.get("bang", []):
                 row = t.rowCount()
                 t.insertRow(row)
                 vals = [
                     r["stt"],
                     r["ten"],
-                    f"{u.get('model', '')} ({u.get('hang', '')})",
+                    model_cell,
                     b.get("yeu_cau", ""),
                     b.get("thong_so_hsmt", ""),
                     b.get("gia_tri", ""),
@@ -167,5 +174,8 @@ def fill_compare(t, results):
                     u.get("nguon", ""),
                 ]
                 for c, v in enumerate(vals):
-                    t.setItem(row, c, _item(v))
+                    it_cell = _item(v)
+                    if c == 2 and u.get("trung_hsmt"):
+                        it_cell.setBackground(QColor("#4a3a1a"))  # tô cảnh báo model trùng HSMT
+                    t.setItem(row, c, it_cell)
     t.resizeRowsToContents()

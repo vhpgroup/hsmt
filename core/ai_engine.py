@@ -23,24 +23,62 @@ def resolve_base_url(model, base_url):
     return (base or DEFAULT_BASE).rstrip("/")
 
 
-SPEC_PROMPT = """Bạn là chuyên gia phân tích hồ sơ mời thầu thiết bị CNTT/điện tại Việt Nam.
-Với MỖI hạng mục dưới đây, CHỈ trích và chuẩn hóa thông số kỹ thuật HSMT thành JSON.
-Không đoán model/hãng ở bước này. Không kết luận khóa hãng ở bước này.
-Bỏ qua mọi yêu cầu hệ điều hành Windows 11 Pro / Windows 11 Professional / Win 11 Pro vì nhà bán hàng thường không ghi thông số này trong datasheet sản phẩm.
-Phải bóc ĐỦ MỌI DÒNG thông số trong hạng mục — không bỏ sót dòng cuối.
-GIỮ ĐÚNG CHIỀU TOÁN TỬ: chép chính xác ≥ ≤ ± ~ < > như HSMT vào "gia_tri"; TUYỆT ĐỐI KHÔNG đảo ≥ thành ≤ hay ngược lại.
-Trường "nguyen_van" phải COPY Y NGUYÊN dòng gốc HSMT (giữ nguyên cả dấu ≥/≤/±) để hệ thống đối chiếu lại chiều toán tử.
-QUAN TRỌNG: trả về ĐÚNG MỘT phần tử cho MỖI STT — bằng đúng số hạng mục đưa vào, giữ đúng "stt" gốc.
-Hạng mục gồm NHIỀU thiết bị con (vd "1/ UPS... 2/ Tủ ắc quy... 3/ Ắc quy... 4/ Rail kit") vẫn là MỘT phần tử,
-nhưng PHẢI tách từng thiết bị con vào mảng "thanh_phan" — mỗi thiết bị con có thông số + từ khóa tìm RIÊNG
-(để hệ thống tìm model đạt 100% riêng cho từng thiết bị). Thiết bị đơn lẻ: "thanh_phan" có đúng 1 phần tử.
-"thong_so" cấp ngoài vẫn là bản gộp toàn bộ.
-Trả về DUY NHẤT một mảng JSON, mỗi phần tử:
-{"stt":"...","loai_thiet_bi":"loại thiết bị ngắn gọn","tin_cay":"Cao|Trung bình|Thấp",
-"can_cu":"1-2 câu mô tả các dấu hiệu kỹ thuật chính đã trích",
-"thong_so":[{"ten":"tên tiêu chí ngắn","gia_tri":"giá trị yêu cầu (giữ nguyên con số/đơn vị)","nguyen_van":"dòng gốc trong HSMT"}],
-"thanh_phan":[{"ten_thiet_bi":"tên thiết bị con","thong_so":[{"ten":"","gia_tri":"","nguyen_van":""}],"tu_khoa_tim":"từ khóa Google riêng cho thiết bị con này, tối đa 20 từ"}],
-"tu_khoa_tim":"chuỗi tìm Google TỐI ĐA 25 TỪ: loại thiết bị + 3-5 thông số đặc trưng nhất; nếu hạng mục gộp nhiều thiết bị con thì đặt theo thiết bị CHÍNH/giá trị nhất; không kèm Windows 11 Pro, không kèm model/hãng nếu HSMT không nêu rõ"}
+SPEC_PROMPT = """Bạn là một chuyên gia bóc tách hồ sơ mời thầu (HSMT) xây dựng/CNTT tại Việt Nam.
+Nhiệm vụ: đọc ĐÚNG NGUYÊN VĂN từng dòng/mục trong bảng "Yêu cầu kỹ thuật cụ thể" của HSMT và chuyển thành JSON có cấu trúc để dùng cho việc tìm kiếm, đối chiếu thiết bị/sản phẩm đáp ứng.
+
+QUY TẮC BẮT BUỘC:
+1. TUYỆT ĐỐI KHÔNG suy diễn, làm tròn, đổi đơn vị, hoặc tự thêm thông số không có trong văn bản gốc. Nếu không chắc một cụm từ có phải thông số kỹ thuật không, vẫn trích ra nhưng đánh dấu "muc_do": "khong_ro".
+2. PHÂN LOẠI mỗi thông số vào đúng "loai_du_lieu":
+   - "thong_so_ky_thuat": chỉ số đo lường được, có thể tra trong datasheet nhà sản xuất.
+   - "tieu_chuan_chung_chi": tiêu chuẩn/chứng chỉ như TCVN, ISO, CE, FCC.
+   - "vat_tu_thi_cong": vật tư phụ, nhân công, lắp đặt/thi công đi kèm; KHÔNG dùng để tìm kiếm sản phẩm.
+   - "yeu_cau_chung": yêu cầu không định lượng được.
+3. MỘT DÒNG STT có thể chứa NHIỀU THIẾT BỊ CON. Phải tách riêng từng thiết bị con vào "hang_muc_con". Nhận diện ranh giới qua "1/", "2/", tiêu đề in hoa, hoặc dấu "*" đứng đầu dòng mô tả tên thiết bị.
+4. GIỮ NGUYÊN VĂN gốc của từng thông số vào "trich_dan_nguon"; không diễn giải lại.
+5. TÁCH toán tử so sánh và giá trị số nếu có thể:
+   - "≥", "không nhỏ hơn", "tối thiểu" -> ">="
+   - "≤", "không lớn hơn", "tối đa" -> "<="
+   - "±", "khoảng", hai giá trị nối bằng "~" hoặc "-" -> "khoang"
+   - một giá trị cố định -> "="
+   - không xác định -> "khac"
+   Nếu có nhiều giá trị số, điền "gia_tri_so_min" và "gia_tri_so_max"; nếu chỉ có một giá trị, điền "gia_tri_so".
+6. Nếu một dòng chỉ là tiêu đề nhóm không mang giá trị kỹ thuật, KHÔNG tạo entry thông số; chỉ dùng làm ngữ cảnh "nhom_thong_so" cho dòng con.
+7. Bỏ qua Windows 11 Pro / Windows 11 Professional / Win 11 Pro.
+8. Trả về ĐÚNG MỘT phần tử JSON cho MỖI STT đưa vào, giữ đúng STT gốc.
+9. CHỈ xuất JSON hợp lệ. Không markdown, không giải thích, không dấu ``` .
+
+SCHEMA ĐẦU RA là MỘT MẢNG JSON:
+QUY TAC THEM VE PHU KIEN KHONG CO THONG SO:
+- Bat buoc giu moi thiet bi con da liet ke trong hang_muc_con, ke ca khi khong co dong thong so ben duoi.
+- Voi phu kien nhu "Rail Kit - Thanh truot gan tu Rack cho UPS": dat thong_so=[], trang_thai_thong_so="khong_co_thong_so", loai_hang_muc="phu_kien_di_kem", phu_thuoc_hang_muc_con la thiet bi chinh no di kem.
+- Voi thiet bi con co thong so binh thuong: trang_thai_thong_so="co_thong_so", loai_hang_muc="doc_lap", phu_thuoc_hang_muc_con=null.
+
+[{
+  "stt": "số STT trong bảng",
+  "ten_hang_hoa_muc": "tên ở cột Tên hàng hóa",
+  "tin_cay": "Cao|Trung bình|Thấp",
+  "can_cu": "1-2 câu mô tả dấu hiệu kỹ thuật chính đã trích",
+  "hang_muc_con": [{
+    "ten_hang_muc_con": "tên thiết bị con, hoặc trùng ten_hang_hoa_muc nếu chỉ có 1 thiết bị",
+    "trang_thai_thong_so": "co_thong_so|khong_co_thong_so",
+    "loai_hang_muc": "doc_lap|phu_kien_di_kem",
+    "phu_thuoc_hang_muc_con": "ten thiet bi chinh neu la phu_kien_di_kem, nguoc lai null",
+    "thong_so": [{
+      "nhom_thong_so": "tên nhóm cha nếu có, hoặc null",
+      "ten_thong_so": "tên thông số",
+      "gia_tri_yeu_cau": "giá trị viết nguyên văn",
+      "don_vi": "đơn vị nếu tách được, hoặc null",
+      "toan_tu_so_sanh": ">=|<=|=|khoang|khac",
+      "gia_tri_so": null,
+      "gia_tri_so_min": null,
+      "gia_tri_so_max": null,
+      "loai_du_lieu": "thong_so_ky_thuat|tieu_chuan_chung_chi|vat_tu_thi_cong|yeu_cau_chung",
+      "muc_do": "bat_buoc|khong_ro",
+      "trich_dan_nguon": "nguyên văn dòng gốc"
+    }]
+  }]
+}]
+
 HẠNG MỤC:
 """
 
@@ -94,9 +132,10 @@ class AIEngine:
         self.model = cfg.get("model") or DEFAULT_MODEL
         self.base = resolve_base_url(self.model, cfg.get("base_url"))
         self.key = cfg.get("api_key", "")
+        self.extract_timeout = int(cfg.get("extract_timeout", 90))
         self.usage = {"in": 0, "out": 0}
 
-    def chat(self, prompt, retries=5):
+    def chat(self, prompt, retries=3, timeout=60):
         body = {
             "model": self.model,
             "temperature": 0.2,
@@ -107,7 +146,7 @@ class AIEngine:
             try:
                 r = requests.post(
                     f"{self.base}/chat/completions",
-                    timeout=120,
+                    timeout=timeout,
                     headers={"Authorization": f"Bearer {self.key}"},
                     json=body,
                 )
@@ -131,6 +170,10 @@ class AIEngine:
                 self.usage["in"] += u.get("prompt_tokens", 0)
                 self.usage["out"] += u.get("completion_tokens", 0)
                 return d["choices"][0]["message"]["content"]
+            except requests.ReadTimeout:
+                last = f"ReadTimeout: endpoint did not return within {timeout}s"
+                if i < retries - 1:
+                    time.sleep(5 * (i + 1))
             except requests.RequestException as e:
                 last = f"{type(e).__name__}: {str(e)[:200]}"
                 if i < retries - 1:
@@ -155,7 +198,17 @@ class AIEngine:
     def extract_specs_batch(self, items):
         # 3000 ký tự đủ trọn thông số mục dài nhất (báo cháy ~1.900) — không cắt mất dòng cuối
         block = "\n".join(f"- STT {it['stt']} | {it['ten']} | {it['thongso'][:3000]}" for it in items)
-        return self.parse_json(self.chat(SPEC_PROMPT + block))
+        raw = self.chat(SPEC_PROMPT + block, retries=2, timeout=self.extract_timeout)
+        try:
+            return self.parse_json(raw)
+        except json.JSONDecodeError:
+            fix_prompt = (
+                "Sua JSON sau thanh JSON hop le. Chi tra ve JSON, khong markdown, khong giai thich. "
+                "Khong them/bot du lieu, chi sua dau phay, dau ngoac, quote, escape neu can.\n"
+                f"JSON_LOI:\n{raw[:12000]}"
+            )
+            fixed = self.chat(fix_prompt, retries=1, timeout=60)
+            return self.parse_json(fixed)
 
     def identify_batch(self, items):
         return self.extract_specs_batch(items)

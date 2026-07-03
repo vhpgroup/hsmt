@@ -108,6 +108,25 @@ def _spec_summary(spec):
             lines.append(f"• {raw}")
         else:
             lines.append(f"• {s.get('ten', '')}: {s.get('gia_tri', '')}")
+    for comp in spec.get("thanh_phan") or []:
+        comp_rows = comp.get("thong_so") or []
+        name = comp.get("ten_thiet_bi") or comp.get("ten_hang_muc_con") or "Thanh phan"
+        lines.append(f"[{name}]")
+        if not comp_rows:
+            status = comp.get("trang_thai_thong_so") or "khong_co_thong_so"
+            kind = comp.get("loai_hang_muc") or "phu_kien_di_kem"
+            parent = comp.get("phu_thuoc_hang_muc_con") or ""
+            suffix = f" | phu thuoc: {parent}" if parent else ""
+            lines.append(f"- {status} | {kind}{suffix}")
+            continue
+        for s in comp_rows:
+            raw = s.get("nguyen_van") or s.get("trich_dan_nguon")
+            if raw:
+                lines.append(f"- {raw}")
+            else:
+                key = s.get("ten") or s.get("ten_thong_so") or ""
+                val = s.get("gia_tri") or s.get("gia_tri_yeu_cau") or ""
+                lines.append(f"- {key}: {val}")
     return "\n".join(lines)
 
 

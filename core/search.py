@@ -65,6 +65,17 @@ def exa(query, key, num=5):
 PROVIDERS = {"serper": serper, "tavily": tavily, "exa": exa}
 
 
+def provider_key(cfg, provider):
+    legacy = cfg.get("search_key", "")
+    if provider == "serper":
+        return cfg.get("serper_key") or (legacy if cfg.get("search_provider") == "serper" else "")
+    if provider == "exa":
+        return cfg.get("exa_key") or (legacy if cfg.get("search_provider") == "exa" else "")
+    if provider == "tavily":
+        return cfg.get("tavily_key") or (legacy if cfg.get("search_provider") == "tavily" else "")
+    return legacy
+
+
 def tavily_research(query, key, max_results=5):
     """Tavily research: tổng hợp NHIỀU nguồn + câu trả lời — dùng cứu hộ khi dòng chưa xác minh."""
     r = requests.post(
@@ -313,7 +324,8 @@ def build_context(item, ident, cfg, counter=None):
     """Search products by normalized specs, then fetch datasheets/official links for AI verification."""
     if cfg.get("search_mode") == "hybrid":
         return _hybrid_context(item, ident, cfg, counter)
-    provider, key = cfg.get("search_provider", "serper"), cfg.get("search_key", "")
+    provider = cfg.get("search_provider", "serper")
+    key = provider_key(cfg, provider)
     if provider == "off" or not key:
         return ""
     fn = PROVIDERS.get(provider, serper)

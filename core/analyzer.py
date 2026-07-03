@@ -70,10 +70,85 @@ def _filter_specs(spec):
     return out
 
 
+def _adapt_ai_spec_schema(spec):
+    """Map the strict extraction JSON schema into the legacy internal shape."""
+    if not isinstance(spec, dict) or "hang_muc_con" not in spec:
+        return spec
+
+    out = dict(spec)
+    comps = []
+    flat_rows = []
+    for comp in spec.get("hang_muc_con") or []:
+        if not isinstance(comp, dict):
+            continue
+        comp_name = comp.get("ten_hang_muc_con") or spec.get("ten_hang_hoa_muc") or ""
+        rows = []
+        for row in comp.get("thong_so") or []:
+            if not isinstance(row, dict):
+                continue
+            mapped = {
+                "nhom": row.get("nhom_thong_so"),
+                "ten": row.get("ten_thong_so", ""),
+                "gia_tri": row.get("gia_tri_yeu_cau", ""),
+                "don_vi": row.get("don_vi"),
+                "toan_tu_so_sanh": row.get("toan_tu_so_sanh", ""),
+                "gia_tri_so": row.get("gia_tri_so"),
+                "gia_tri_so_min": row.get("gia_tri_so_min"),
+                "gia_tri_so_max": row.get("gia_tri_so_max"),
+                "loai_du_lieu": row.get("loai_du_lieu", ""),
+                "muc_do": row.get("muc_do", ""),
+                "nguyen_van": row.get("trich_dan_nguon") or row.get("nguyen_van") or "",
+            }
+            rows.append(mapped)
+            flat_rows.append(mapped)
+        comps.append({
+            "ten_thiet_bi": comp_name,
+            "trang_thai_thong_so": comp.get("trang_thai_thong_so") or ("co_thong_so" if rows else "khong_co_thong_so"),
+            "loai_hang_muc": comp.get("loai_hang_muc") or ("doc_lap" if rows else "phu_kien_di_kem"),
+            "phu_thuoc_hang_muc_con": comp.get("phu_thuoc_hang_muc_con"),
+            "tu_khoa_tim": " ".join([comp_name] + [r.get("gia_tri", "") for r in rows[:4]]).strip(),
+            "thong_so": rows,
+        })
+
+    out["loai_thiet_bi"] = out.get("loai_thiet_bi") or out.get("ten_hang_hoa_muc", "")
+    out["thanh_phan"] = comps
+    out["thong_so"] = flat_rows
+    out["tu_khoa_tim"] = out.get("tu_khoa_tim") or " ".join(
+        [out.get("loai_thiet_bi", "")] + [r.get("gia_tri", "") for r in flat_rows[:6]]
+    ).strip()
+    if not out.get("can_cu"):
+        names = ", ".join(c.get("ten_thiet_bi", "") for c in comps if c.get("ten_thiet_bi"))
+        out["can_cu"] = f"Yeu cau ky thuat ve {names}" if names else out.get("loai_thiet_bi", "")
+    return out
+
+
 def _norm(text):
     text = (text or "").lower()
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def _extra_empty_components_from_text(item, existing):
+    """Keep named child items that have no spec rows, e.g. Rail Kit accessories."""
+    existing_names = {_norm(c.get("ten_thiet_bi") or c.get("ten_hang_muc_con")) for c in existing or []}
+    out = []
+    text = item.get("thongso", "") or ""
+    for m in re.finditer(r"(?m)^\s*\d+/\s*([^\n]+?)\s*$", text):
+        name = m.group(1).strip(" .:-")
+        key = _norm(name)
+        if not name or key in existing_names:
+            continue
+        if re.search(r"\brail\s*kit\b|thanh\s+trượt|thanh\s+truot", name, re.I):
+            parent = (existing or [{}])[0].get("ten_thiet_bi") or item.get("ten", "")
+            out.append({
+                "ten_thiet_bi": name,
+                "trang_thai_thong_so": "khong_co_thong_so",
+                "loai_hang_muc": "phu_kien_di_kem",
+                "phu_thuoc_hang_muc_con": parent,
+                "tu_khoa_tim": name,
+                "thong_so": [],
+            })
+    return out
 
 
 def _hsmt_value_for(spec, criterion):
@@ -254,7 +329,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     results, todo = {}, []
     for it in items:
         wait_if_needed()
-        hit = cache.get(item_key(it, "specs_v8"), ttl)
+        hit = cache.get(item_key(it, "specs_v11"), ttl) or cache.get(item_key(it, "specs_v10"), ttl)
         if hit:
             results[it["id"]] = hit
         else:
@@ -264,7 +339,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     batches, _cur, _size = [], [], 0
     for _it in todo:
         _ln = len(_it.get("thongso", ""))
-        if _cur and (len(_cur) >= 6 or _size + _ln > 6000):
+        if _cur and (len(_cur) >= 1 or _size + _ln > 3000):
             batches.append(_cur); _cur, _size = [], 0
         _cur.append(_it); _size += _ln
     if _cur:
@@ -276,7 +351,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         _done += len(batch)
         try:
             ai_specs = ai.extract_specs_batch(batch)
-            arr = [_filter_specs(x) for x in ai_specs]
+            arr = [_filter_specs(_adapt_ai_spec_schema(x)) for x in ai_specs]
         except Exception as e:
             arr = [
                 _filter_specs({
@@ -305,7 +380,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                                    "tin_cay": "Thấp", "can_cu": "Lỗi AI: thiếu phần tử STT trong JSON trả về",
                                    "tu_khoa_tim": b.get("ten", "")})
             if "lỗi ai" not in str(r.get("can_cu", "")).lower():
-                cache.put(item_key(b, "specs_v8"), r)
+                cache.put(item_key(b, "specs_v11"), r)
             results[b["id"]] = r
             if on_item:
                 r0 = dict(b)
@@ -326,20 +401,32 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     work = []
     for it in items:
         spec = _filter_specs(results.get(it["id"], {}))
-        comps = [c for c in (spec.get("thanh_phan") or []) if (c or {}).get("thong_so")]
+        comps = [c for c in (spec.get("thanh_phan") or []) if c]
+        extras = _extra_empty_components_from_text(it, comps)
+        if extras:
+            comps.extend(extras)
+            spec["thanh_phan"] = comps
         if len(comps) >= 2:
+            primary_comp_name = next((c.get("ten_thiet_bi") for c in comps if (c or {}).get("thong_so")), it.get("ten", ""))
             for ci, comp in enumerate(comps[:26]):
                 sub = dict(it)
                 sub["stt"] = f"{it['stt']}{letters[ci]}"
                 sub["ten"] = f"{it['ten']} — {comp.get('ten_thiet_bi', '') or f'Thành phần {ci + 1}'}"
                 sub["id"] = it["id"] if ci == 0 else f"{it['id']}#{ci}"
                 sub_specs = comp.get("thong_so") or []
+                comp_status = comp.get("trang_thai_thong_so") or ("co_thong_so" if sub_specs else "khong_co_thong_so")
+                comp_kind = comp.get("loai_hang_muc") or ("doc_lap" if sub_specs else "phu_kien_di_kem")
                 sub["thongso"] = "\n".join(
                     (s.get("nguyen_van") or f"{s.get('ten', '')}: {s.get('gia_tri', '')}") for s in sub_specs)
                 sub["ident"] = _filter_specs({
                     "stt": sub["stt"], "loai_thiet_bi": comp.get("ten_thiet_bi", ""),
                     "tin_cay": spec.get("tin_cay", ""), "can_cu": spec.get("can_cu", ""),
                     "thong_so": sub_specs,
+                    "trang_thai_thong_so": comp_status,
+                    "loai_hang_muc": comp_kind,
+                    "phu_thuoc_hang_muc_con": comp.get("phu_thuoc_hang_muc_con") or (
+                        primary_comp_name if comp_kind == "phu_kien_di_kem" else None
+                    ),
                     "tu_khoa_tim": comp.get("tu_khoa_tim") or comp.get("ten_thiet_bi", ""),
                 })
                 work.append(sub)
@@ -355,9 +442,20 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         spec = it["ident"]
         row = it
         row["risk"] = risk_level(spec)
-        if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v15")
-            cmp_hit = cache.get(ck, ttl)
+        if (
+            spec.get("trang_thai_thong_so") == "khong_co_thong_so"
+            and spec.get("loai_hang_muc") == "phu_kien_di_kem"
+        ):
+            parent = spec.get("phu_thuoc_hang_muc_con") or "thiet bi chinh"
+            row["so_sanh"] = {
+                "ung_vien": [],
+                "nhan_xet": f"N/A - cho nha cung cap xac nhan phu kien di kem, tuong thich voi {parent}.",
+                "can_review": True,
+                "trang_thai": "N/A - cho xac nhan",
+            }
+        elif do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
+            ck = item_key(it, "compare_v16")
+            cmp_hit = cache.get(ck, ttl) or cache.get(item_key(it, "compare_v15"), ttl)
             if not cmp_hit:
                 wait_if_needed()
                 progress(f"Serper tìm & AI đối chiếu đạt 100%: {it['ten'][:30]}...", 40 + int(55 * n / max(len(work), 1)))

@@ -197,6 +197,34 @@ def _flag_hsmt_model(result, item):
     return result
 
 
+def _pass_verdict(v):
+    return str(v or "").strip().lower() in ("dat", "vuot", "đạt", "vượt")
+
+
+def _candidate_percent(cand):
+    """% dòng Đạt/Vượt trên tổng số dòng của ứng viên."""
+    rows = cand.get("bang") or []
+    if not rows:
+        return 0
+    ok = sum(1 for r in rows if _pass_verdict(r.get("danh_gia")))
+    return round(100 * ok / len(rows))
+
+
+def _missing_rows(cand):
+    return [r for r in (cand.get("bang") or []) if not _pass_verdict(r.get("danh_gia"))]
+
+
+def _best_effort(cands):
+    """Chọn ứng viên gần nhất (%, cao nhất) để gắn cờ 'cần review thủ công' khi không có model 100%."""
+    scored = [(c, _candidate_percent(c)) for c in (cands or []) if (c.get("bang"))]
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[1], reverse=True)
+    c, pct = scored[0]
+    return {"model": c.get("model", ""), "hang": c.get("hang", ""), "phan_tram": pct,
+            "nguon": c.get("nguon", ""), "thieu": [r.get("yeu_cau", "") for r in _missing_rows(c)][:8]}
+
+
 def _only_100_percent(result, spec, item=None):
     result = _normalize_compare_rows(result, spec)
     if item is not None:
@@ -328,7 +356,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row = it
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v13")
+            ck = item_key(it, "compare_v15")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
@@ -336,9 +364,56 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                 ctx = websearch.build_context(it, spec, cfg, counter)
                 try:
                     raw_cmp = ai.compare(it, spec, ctx)
-                    raw_cmp = _verify_quotes(raw_cmp, ctx)  # máy dò lại từng trích dẫn — bịa là loại
-                    raw_cmp = _check_official_source(raw_cmp)  # domain nguồn phải là chính hãng
+                    raw_cmp = _verify_quotes(raw_cmp, ctx)          # máy dò lại từng trích dẫn — bịa là loại
+                    raw_cmp = _check_official_source(raw_cmp)       # phân loại domain nguồn
+                    all_cands = list(raw_cmp.get("ung_vien", []) or [])  # giữ TẤT CẢ ứng viên (kể cả gần đạt)
                     cmp_hit = _only_100_percent(raw_cmp, spec, it)
+
+                    # ===== TAVILY CỨU HỘ HẸP: chỉ chạy khi CHƯA có model 100%, và CHỈ cho ứng viên gần nhất + đúng dòng thiếu =====
+                    tav_key = cfg.get("tavily_key") or (cfg.get("search_key", "") if cfg.get("search_provider") == "tavily" else "")
+                    if (not cmp_hit.get("ung_vien")) and cfg.get("search_mode") == "hybrid" and tav_key and all_cands:
+                        best = max(all_cands, key=_candidate_percent)   # ứng viên % cao nhất
+                        missing = _missing_rows(best)
+                        if missing:
+                            try:
+                                progress(f"Tavily cứu hộ {len(missing)} dòng thiếu: {best.get('model','')[:24]}...",
+                                         40 + int(55 * n / max(len(work), 1)))
+                                # 1 truy vấn Tavily/dòng thiếu (đúng model + đúng tiêu chí) — phạm vi hẹp
+                                bundle = []
+                                for r in missing[:6]:
+                                    q = f"{best.get('model','')} {best.get('hang','')} {r.get('yeu_cau','')} {r.get('thong_so_hsmt','')}"
+                                    ex = websearch.tavily_research(q.strip(), tav_key)
+                                    if counter is not None:
+                                        counter["used"] = counter.get("used", 0) + 1
+                                    if ex:
+                                        bundle.append(f"[TAVILY · {r.get('yeu_cau','')}] {ex}")
+                                tav_ctx = "\n---\n".join(bundle)
+                                if tav_ctx:
+                                    fixed = ai.recheck_lines(it, best, missing, tav_ctx)  # đối chiếu LẠI CHỈ dòng thiếu
+                                    by_crit = {_norm(x.get("yeu_cau")): x for x in (fixed.get("bang") or [])}
+                                    for r in best.get("bang", []):
+                                        nx = by_crit.get(_norm(r.get("yeu_cau")))
+                                        if nx:
+                                            r.update({"gia_tri": nx.get("gia_tri", r.get("gia_tri", "")),
+                                                      "danh_gia": nx.get("danh_gia", r.get("danh_gia", "")),
+                                                      "trich_dan": nx.get("trich_dan", r.get("trich_dan", ""))})
+                                    best["dat_100"] = True
+                                    best = _verify_quotes({"ung_vien": [best]}, ctx + "\n" + tav_ctx)["ung_vien"][0]
+                                    promoted = _only_100_percent({"ung_vien": [best]}, spec, it)
+                                    if promoted.get("ung_vien"):
+                                        cmp_hit = promoted            # cứu thành công → đạt 100%
+                            except Exception:
+                                pass
+
+                    # ===== ĐIỂM DỪNG: vẫn không có 100% → xuất best-effort + cờ cần review (KHÔNG lặp vô hạn) =====
+                    if not cmp_hit.get("ung_vien"):
+                        be = _best_effort(all_cands)
+                        if be:
+                            cmp_hit["best_effort"] = be
+                            cmp_hit["can_review"] = True
+                            cmp_hit["nhan_xet"] = (f"Chưa có model đạt 100%. Cao nhất: {be['model']} ({be['hang']}) "
+                                                   f"đạt ~{be['phan_tram']}%, thiếu: {', '.join(be['thieu'][:5])}. "
+                                                   f"⚠ CẦN REVIEW THỦ CÔNG.")
                     cache.put(ck, cmp_hit)
                 except Exception as e:
                     cmp_hit = {"tieu_chi": [], "ung_vien": [], "nhan_xet": f"Lỗi: {e}"}

@@ -1,8 +1,47 @@
 # -*- coding: utf-8 -*-
-"""Web search: Serper/Tavily -> collect result snippets -> fetch official pages and PDF datasheets."""
+"""Web search: Serper/Tavily/Exa -> snippets -> fetch official pages/PDF datasheets.
+SONG SONG có kiểm soát (S1): mọi HTTP call qua semaphore theo provider — chạy chồng nhau
+nhưng không bao giờ dội rate-limit; fetch trang/PDF chạy đồng thời (đo thật nhanh 5.6x)."""
 import re
+import threading
+from concurrent import futures
 
 import requests
+
+# Trần đồng thời theo provider — bảo vệ rate-limit khi nhiều dòng con cùng tìm kiếm
+_SEM = {
+    "serper": threading.BoundedSemaphore(6),
+    "exa": threading.BoundedSemaphore(4),
+    "tavily": threading.BoundedSemaphore(4),
+}
+
+
+def _bump(counter, cfg=None):
+    if counter is None:
+        return
+    lock = (cfg or {}).get("_lock")
+    if lock:
+        with lock:
+            counter["used"] = counter.get("used", 0) + 1
+    else:
+        counter["used"] = counter.get("used", 0) + 1
+
+
+def _run_search(provider, fn, query, key, num, cfg, counter, **kw):
+    """S3 — cache truy vấn TOÀN PHIÊN: các dòng con trùng từ khóa (tủ ắc quy ↔ ắc quy...) dùng lại
+    kết quả, 0 HTTP / 0 credit. Cache sống trong cfg['_qcache'] do analyzer.run cấp mỗi lần chạy."""
+    qc = (cfg or {}).get("_qcache")
+    ck = f"{provider}|{kw.get('gl', 'vn')}|{query.strip().lower()}"
+    if qc is not None:
+        with qc["lock"]:
+            if ck in qc["data"]:
+                return list(qc["data"][ck])
+    res = fn(query, key, num, **kw)
+    _bump(counter, cfg)
+    if qc is not None:
+        with qc["lock"]:
+            qc["data"][ck] = list(res)
+    return res
 
 
 def _is_windows_11_pro(text):
@@ -18,13 +57,15 @@ def _strip_windows_terms(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def serper(query, key, num=5):
-    r = requests.post(
-        "https://google.serper.dev/search",
-        timeout=30,
-        headers={"X-API-KEY": key, "Content-Type": "application/json"},
-        json={"q": query, "gl": "vn", "hl": "vi", "num": num},
-    )
+def serper(query, key, num=5, gl="vn", hl="vi"):
+    """gl/hl tùy biến (A3): truy vấn tiếng Anh gl=us hl=en bắt datasheet quốc tế mà bản vi bỏ sót."""
+    with _SEM["serper"]:
+        r = requests.post(
+            "https://google.serper.dev/search",
+            timeout=30,
+            headers={"X-API-KEY": key, "Content-Type": "application/json"},
+            json={"q": query, "gl": gl, "hl": hl, "num": num},
+        )
     r.raise_for_status()
     return [
         {"title": o.get("title", ""), "link": o.get("link", ""), "snippet": o.get("snippet", "")}
@@ -33,11 +74,12 @@ def serper(query, key, num=5):
 
 
 def tavily(query, key, num=5):
-    r = requests.post(
-        "https://api.tavily.com/search",
-        timeout=40,
-        json={"api_key": key, "query": query, "max_results": num, "include_answer": False},
-    )
+    with _SEM["tavily"]:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            timeout=40,
+            json={"api_key": key, "query": query, "max_results": num, "include_answer": False},
+        )
     r.raise_for_status()
     return [
         {"title": o.get("title", ""), "link": o.get("url", ""), "snippet": o.get("content", "")[:400]}
@@ -47,13 +89,14 @@ def tavily(query, key, num=5):
 
 def exa(query, key, num=5):
     """Exa.ai — tìm ngữ nghĩa + trả kèm summary/highlights (nội dung đã bóc sẵn cho AI)."""
-    r = requests.post(
-        "https://api.exa.ai/search",
-        timeout=45,
-        headers={"x-api-key": key, "Content-Type": "application/json"},
-        json={"query": query, "numResults": num, "type": "auto",
-              "contents": {"summary": True, "highlights": {"numSentences": 5}}},
-    )
+    with _SEM["exa"]:
+        r = requests.post(
+            "https://api.exa.ai/search",
+            timeout=45,
+            headers={"x-api-key": key, "Content-Type": "application/json"},
+            json={"query": query, "numResults": num, "type": "auto",
+                  "contents": {"summary": True, "highlights": {"numSentences": 5}}},
+        )
     r.raise_for_status()
     out = []
     for o in r.json().get("results", [])[:num]:
@@ -78,12 +121,13 @@ def provider_key(cfg, provider):
 
 def tavily_research(query, key, max_results=5):
     """Tavily research: tổng hợp NHIỀU nguồn + câu trả lời — dùng cứu hộ khi dòng chưa xác minh."""
-    r = requests.post(
-        "https://api.tavily.com/search",
-        timeout=60,
-        json={"api_key": key, "query": query, "max_results": max_results,
-              "include_answer": True, "search_depth": "advanced"},
-    )
+    with _SEM["tavily"]:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            timeout=60,
+            json={"api_key": key, "query": query, "max_results": max_results,
+                  "include_answer": True, "search_depth": "advanced"},
+        )
     r.raise_for_status()
     d = r.json()
     ans = d.get("answer", "") or ""
@@ -148,7 +192,8 @@ def _brand_tokens(titles):
 
 def fetch_page(url, limit=8000):
     try:
-        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        # S4: timeout 20→10s — trang chậm bỏ qua thay vì ghim cả pipeline (chạy song song nên càng rẻ)
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         html = r.text
         html = re.sub(r"(?is)<(script|style|nav|footer|header).*?</\1>", " ", html)
         txt = re.sub(r"<[^>]+>", " ", html)
@@ -189,10 +234,10 @@ def fetch_pdf(url, limit=16000):
     """Tải PDF → text thuần + BẢNG thông số + OCR nếu là bản scan/ảnh."""
     try:
         import fitz
-        r = requests.get(url, timeout=45, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})   # S4: 45→25s
         doc = fitz.open(stream=r.content, filetype="pdf")
         parts = []
-        for pg in doc[:12]:
+        for pg in doc[:10]:
             tbl = _extract_tables(pg)
             if tbl:
                 parts.append("[BẢNG] " + tbl)
@@ -214,8 +259,28 @@ def _kw_from(item, ident):
     return " ".join(re.sub(r"\s+", " ", _strip_windows_terms(base)).split()[:28])
 
 
+def _kw_relaxed(item, ident):
+    """A4 — truy vấn 'NỚI SỐ' vá bias: từ khóa nguyên văn chứa con số quá đặc thù (61Mpps, 82Gbps...)
+    khiến Google thiên về đúng model HSMT 'vẽ'. Bản nới giữ LOẠI thiết bị + các NGƯỠNG ≥/≤ (yêu cầu thật,
+    model vượt chuẩn vẫn khớp) + tiêu chuẩn, bỏ các giá trị '=' đặc thù → model thay thế nổi lên được."""
+    keep = []
+    for r in ident.get("thong_so") or []:
+        if _is_windows_11_pro(f"{r.get('ten', '')} {r.get('gia_tri', '')}"):
+            continue
+        op = str(r.get("toan_tu_so_sanh", ""))
+        kind = str(r.get("loai_du_lieu", ""))
+        if op in (">=", "<="):
+            keep.append(f"{r.get('ten', '')} {r.get('gia_tri', '')}")
+        elif kind == "tieu_chuan_chung_chi":
+            keep.append(str(r.get("gia_tri", "")))
+    base = f"{ident.get('loai_thiet_bi', item.get('ten', ''))} " + " ".join(keep[:5])
+    kw = " ".join(re.sub(r"\s+", " ", _strip_windows_terms(base)).split()[:24])
+    return kw if len(kw.split()) >= 3 else ""
+
+
 def _fetch_deep(all_res, cfg, max_deep, brand_hints=None):
-    """Đọc sâu: ưu tiên PDF domain-hãng > PDF chính hãng > PDF khác > trang. brand_hints boost domain khớp hãng."""
+    """Đọc sâu SONG SONG (đo thật 5.6x): ưu tiên PDF domain-hãng > PDF chính hãng > PDF khác > trang.
+    Tải đồng thời rồi ghép lại đúng thứ tự ưu tiên — kết quả y hệt bản tuần tự, chỉ nhanh hơn."""
     if not cfg.get("fetch_pages", True):
         return []
     brand_hints = brand_hints or set()
@@ -226,12 +291,22 @@ def _fetch_deep(all_res, cfg, max_deep, brand_hints=None):
             return 0
         return 1 if is_official(o["link"]) else 2
 
-    deep = []
-    pdfs = sorted([o for o in all_res if ".pdf" in o["link"].lower()], key=rank)
-    pages = sorted([o for o in all_res if ".pdf" not in o["link"].lower()], key=rank)
-    n = 0
-    for o in pdfs[:4]:                        # đọc tối đa 4 PDF (ưu tiên chính xác hơn tiết kiệm)
-        txt = fetch_pdf(o["link"])
+    pdfs = sorted([o for o in all_res if ".pdf" in o["link"].lower()], key=rank)[:4]
+    pages = sorted([o for o in all_res if ".pdf" not in o["link"].lower()], key=rank)[:max_deep + 1]
+    texts = {}
+    pool_n = max(2, int(cfg.get("parallel_fetch", 6)))
+    with futures.ThreadPoolExecutor(max_workers=pool_n) as pool:
+        futs = {pool.submit(fetch_pdf, o["link"]): o["link"] for o in pdfs}
+        futs.update({pool.submit(fetch_page, o["link"]): o["link"] for o in pages})
+        for f in futures.as_completed(futs):
+            try:
+                texts[futs[f]] = f.result()
+            except Exception:
+                texts[futs[f]] = ""
+
+    deep, n = [], 0
+    for o in pdfs:
+        txt = texts.get(o["link"], "")
         if txt:
             n += 1
             tag = "PDF DATASHEET CHINH HANG" if is_official(o["link"]) else "PDF (dai ly/tong hop)"
@@ -239,7 +314,7 @@ def _fetch_deep(all_res, cfg, max_deep, brand_hints=None):
     for o in pages:
         if n >= max_deep:
             break
-        txt = fetch_page(o["link"])
+        txt = texts.get(o["link"], "")
         if txt:
             n += 1
             tag = "TRANG CHINH HANG" if is_official(o["link"]) else "TRANG dai ly/tong hop"
@@ -255,65 +330,111 @@ def _dedup(results):
     return uniq
 
 
+def _official_domain_for(title, results):
+    """A3 — tìm domain chính hãng khớp brand-token của ứng viên trong các kết quả đã có (để bắn site:)."""
+    hints = _brand_tokens([title])
+    for o in results or []:
+        link = o.get("link", "")
+        if is_official(link) and _brand_domain_match(link, hints):
+            try:
+                return link.split("/")[2].lower()
+            except IndexError:
+                continue
+    return ""
+
+
 def _hybrid_context(item, ident, cfg, counter=None):
-    """Luồng 2 tầng: Exa tìm ỨNG VIÊN (ngữ nghĩa) → Serper lấy BẰNG CHỨNG datasheet/PDF theo tên ứng viên."""
+    """Luồng 2 tầng SONG SONG: Exa tìm ỨNG VIÊN (nguyên văn + nới số) → Serper lấy BẰNG CHỨNG.
+    Tầng 1: Exa ×2 + Serper chung VN/EN chạy ĐỒNG THỜI. Tầng 2: các ứng viên chạy ĐỒNG THỜI,
+    mỗi ứng viên tối đa 2 biến thể (S3) + 1 truy vấn site: domain hãng khi chưa có PDF chính hãng (A3)."""
     exa_key = cfg.get("exa_key") or (cfg.get("search_key", "") if cfg.get("search_provider") == "exa" else "")
     serper_key = cfg.get("serper_key") or (cfg.get("search_key", "") if cfg.get("search_provider") == "serper" else "")
     num = int(cfg.get("results_per_query", 8))
     max_deep = int(cfg.get("max_deep_sources", 5))
     kw = _kw_from(item, ident)
-
-    def bump():
-        if counter is not None:
-            counter["used"] = counter.get("used", 0) + 1
+    kw2 = _kw_relaxed(item, ident)
+    pool_n = max(2, int(cfg.get("parallel_fetch", 6)))
 
     all_res, snip, cand = [], [], []
-    # TIER 1 — Exa: tìm ứng viên theo ngữ nghĩa
-    if exa_key:
-        try:
-            er = exa("sản phẩm thiết bị đáp ứng thông số " + kw, exa_key, num); bump()
-            all_res += er
-            cand = [o["title"] for o in er[:5] if o.get("title")]
-            for o in er[:6]:
-                snip.append(f"[ỨNG VIÊN·Exa] {o['link']}\n{o['snippet']}")
-        except Exception as e:
-            snip.append(f"(lỗi Exa: {e})")
-
-    # TIER 2 — Serper: lấy bằng chứng datasheet/PDF
-    if serper_key:
-        # 2a. Truy vấn chung theo từ khóa
-        for q in [kw + " datasheet filetype:pdf", kw + " datasheet thông số kỹ thuật"]:
+    with futures.ThreadPoolExecutor(max_workers=pool_n) as pool:
+        # ===== TẦNG 1 — song song: Exa nguyên văn + Exa nới số + Serper chung (VN, PDF, EN) =====
+        jobs = []
+        if exa_key:
+            jobs.append(("exa", pool.submit(_run_search, "exa", exa,
+                                            "sản phẩm thiết bị đáp ứng thông số " + kw, exa_key, num, cfg, counter)))
+            if kw2 and kw2 != kw:
+                jobs.append(("exa", pool.submit(_run_search, "exa", exa,
+                                                "thiết bị tương đương đáp ứng " + kw2, exa_key, num, cfg, counter)))
+        if serper_key:
+            jobs.append(("serper", pool.submit(_run_search, "serper", serper,
+                                               kw + " datasheet filetype:pdf", serper_key, num, cfg, counter)))
+            jobs.append(("serper", pool.submit(_run_search, "serper", serper,
+                                               kw + " datasheet thông số kỹ thuật", serper_key, num, cfg, counter)))
+            # A3: truy vấn tiếng Anh — bắt datasheet quốc tế mà truy vấn tiếng Việt bỏ sót
+            jobs.append(("serper", pool.submit(_run_search, "serper", serper,
+                                               kw + " datasheet specifications", serper_key, num, cfg, counter,
+                                               gl="us", hl="en")))
+        for tag, fut in jobs:
             try:
-                sr = serper(q, serper_key, num); bump()
-                all_res += sr
-                for o in sr[:4]:
-                    tag = "CHINH HANG" if is_official(o["link"]) else "dai ly/tong hop"
-                    snip.append(f"[BẰNG CHỨNG·Serper] ({tag}) {o['link']}\n{o['snippet']}")
-            except Exception:
-                pass
-        # 2b. VỚI TỪNG ỨNG VIÊN Exa: retry đổi từ khóa đến khi có PDF chính hãng, không thì mới thôi
-        variants = [
-            "{c} datasheet filetype:pdf",
-            "{c} datasheet",
-            "{c} spec sheet specifications",
-            "{c} thông số kỹ thuật",
-        ]
-        for c in cand[:5]:                       # phủ tối đa 5 ứng viên (không lo chi phí)
+                res = fut.result()
+            except Exception as e:
+                snip.append(f"(lỗi {tag}: {e})")
+                continue
+            all_res += res
+            if tag == "exa":
+                for o in res[:5]:
+                    if o.get("title") and o["title"] not in cand:
+                        cand.append(o["title"])
+                for o in res[:6]:
+                    snip.append(f"[ỨNG VIÊN·Exa] {o['link']}\n{o['snippet']}")
+            else:
+                for o in res[:4]:
+                    t = "CHINH HANG" if is_official(o["link"]) else "dai ly/tong hop"
+                    snip.append(f"[BẰNG CHỨNG·Serper] ({t}) {o['link']}\n{o['snippet']}")
+
+        # ===== TẦNG 2 — bằng chứng theo TỪNG ứng viên, các ứng viên chạy song song =====
+        cand = cand[:5]
+        variants = ["{c} datasheet filetype:pdf", "{c} datasheet"]   # S3: 4 biến thể → 2 (đủ bắt PDF)
+
+        def evidence(c, base_res):
+            out_res, out_snip = [], []
             cq = c[:70]
             found_pdf = False
-            for v in variants:
+            for v in variants:                      # tuần tự TRONG 1 ứng viên để early-break tiết kiệm
                 try:
-                    sr = serper(v.format(c=cq), serper_key, num); bump()
-                    all_res += sr
-                    for o in sr[:3]:
-                        tag = "CHINH HANG" if is_official(o["link"]) else "dai ly/tong hop"
-                        snip.append(f"[BẰNG CHỨNG·{cq[:24]}] ({tag}) {o['link']}\n{o['snippet']}")
-                    if any(is_official(o["link"]) and ".pdf" in o["link"].lower() for o in sr):
-                        found_pdf = True
-                        break                    # đã có PDF chính hãng cho ứng viên này → sang ứng viên khác
+                    sr = _run_search("serper", serper, v.format(c=cq), serper_key, num, cfg, counter)
+                except Exception:
+                    continue
+                out_res += sr
+                for o in sr[:3]:
+                    t = "CHINH HANG" if is_official(o["link"]) else "dai ly/tong hop"
+                    out_snip.append(f"[BẰNG CHỨNG·{cq[:24]}] ({t}) {o['link']}\n{o['snippet']}")
+                if any(is_official(o["link"]) and ".pdf" in o["link"].lower() for o in sr):
+                    found_pdf = True
+                    break
+            if not found_pdf:
+                # A3: chưa có PDF chính hãng → bắn thẳng site: domain hãng (rút từ kết quả đã thấy)
+                dom = _official_domain_for(c, out_res + base_res)
+                if dom:
+                    try:
+                        sr = _run_search("serper", serper, f"site:{dom} {cq[:50]}", serper_key, num, cfg, counter)
+                        out_res += sr
+                        for o in sr[:3]:
+                            out_snip.append(f"[BẰNG CHỨNG·site:{dom[:24]}] {o['link']}\n{o['snippet']}")
+                    except Exception:
+                        pass
+            return out_res, out_snip
+
+        if serper_key and cand:
+            snapshot = list(all_res)
+            futs = [pool.submit(evidence, c, snapshot) for c in cand]
+            for f in futs:
+                try:
+                    r2, s2 = f.result()
+                    all_res += r2
+                    snip += s2
                 except Exception:
                     pass
-            # hết biến thể mà vẫn chưa có PDF chính hãng → vẫn giữ ứng viên (dùng nguồn khác), không bỏ
 
     brand_hints = _brand_tokens(cand)
     deep = _fetch_deep(_dedup(all_res), cfg, max_deep, brand_hints)
@@ -346,43 +467,31 @@ def build_context(item, ident, cfg, counter=None):
         kw + " datasheet filetype:pdf",
         kw + " tuong duong thay the",   # truy vấn tìm hàng THAY THẾ (hãng khác)
     ]
+    kw2 = _kw_relaxed(item, ident)
+    if kw2 and kw2 != kw:
+        queries.append(kw2 + " datasheet")   # A4: bản nới số — model vượt chuẩn nổi lên được
 
-    deep, snip, all_res, seen = [], [], [], set()
-    for q in queries:
-        try:
-            res = fn(q, key, num)
-            if counter is not None:
-                counter["used"] = counter.get("used", 0) + 1
+    snip, all_res, seen = [], [], set()
+    # Các truy vấn chạy SONG SONG (semaphore trong provider lo rate-limit)
+    with futures.ThreadPoolExecutor(max_workers=min(len(queries), 6)) as pool:
+        futs = [pool.submit(_run_search, provider, fn, q, key, num, cfg, counter) for q in queries]
+        for f in futs:                        # duyệt THEO THỨ TỰ truy vấn — output ổn định như bản cũ
+            try:
+                res = f.result()
+            except Exception as e:
+                snip.append(f"(loi tra cuu: {e})")
+                continue
+            fresh = []
             for o in res:
                 if o["link"] in seen:   # khử trùng link giữa các truy vấn
                     continue
                 seen.add(o["link"])
                 all_res.append(o)
-            for o in res[:5]:
+                fresh.append(o)
+            for o in fresh[:5]:
                 tag = "CHINH HANG" if is_official(o["link"]) else "trang tong hop/dai ly"
                 snip.append(f"[KQ TIM] ({tag}) {o['link']}\n{o['snippet']}")
-        except Exception as e:
-            snip.append(f"(loi tra cuu: {e})")
 
-    if cfg.get("fetch_pages", True):
-        pdfs = [o for o in all_res if ".pdf" in o["link"].lower()]
-        pdfs.sort(key=lambda o: not is_official(o["link"]))         # PDF chính hãng trước
-        pages = [o for o in all_res if ".pdf" not in o["link"].lower()]
-        pages.sort(key=lambda o: not is_official(o["link"]))         # trang chính hãng trước
-        n_src = 0
-        for o in pdfs[:3]:                                            # đọc tối đa 3 PDF (trước 2)
-            txt = fetch_pdf(o["link"])
-            if txt:
-                n_src += 1
-                tag = "PDF DATASHEET CHINH HANG" if is_official(o["link"]) else "PDF (nguon tong hop)"
-                deep.append(f"[NGUON {n_src}] {tag} ({o['link']}): {txt}")
-        for o in pages:
-            if n_src >= max_deep:                                     # tổng tối đa 5 nguồn đọc sâu
-                break
-            txt = fetch_page(o["link"])
-            if txt:
-                n_src += 1
-                tag = "TRANG CHINH HANG" if is_official(o["link"]) else "TRANG dai ly/tong hop"
-                deep.append(f"[NGUON {n_src}] {tag} ({o['link']}): {txt}")
+    deep = _fetch_deep(all_res, cfg, max_deep)   # đọc sâu song song, PDF chính hãng xếp trước
     # QUAN TRỌNG: nội dung đọc sâu (datasheet) đặt LÊN ĐẦU để không bị cắt khi giới hạn ngữ cảnh
     return "\n---\n".join(deep + snip)

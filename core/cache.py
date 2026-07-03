@@ -9,7 +9,8 @@ CFG = os.path.join(APPDIR, "config.json")
 
 
 def _conn():
-    c = sqlite3.connect(DB)
+    # timeout 30s: nhiều luồng ghi cache đồng thời (pipeline song song) chờ khóa thay vì văng "database is locked"
+    c = sqlite3.connect(DB, timeout=30)
     c.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, ts REAL)")
     return c
 

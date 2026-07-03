@@ -2,6 +2,7 @@
 """Call AI through an OpenAI-compatible endpoint. Extract specs first, then verify only 100%-passing models."""
 import json
 import re
+import threading
 import time
 
 import requests
@@ -21,6 +22,68 @@ def resolve_base_url(model, base_url):
     if expected and (not base or base in known_bases):
         return expected.rstrip("/")
     return (base or DEFAULT_BASE).rstrip("/")
+
+
+# ===== Giới hạn ngữ cảnh (A2): GPT-4.1 mini chịu 1M token — 24K ký tự cũ lãng phí 3/4 dữ liệu đã fetch =====
+# 90K ký tự ≈ 22K token ≈ ~$0.009/lượt compare với giá GPT-4.1 mini — đổi lấy bằng chứng đầy đủ cho AI chấm.
+CMP_CTX_LIMIT = 90_000        # ngữ cảnh tối đa đưa vào compare; analyzer._verify_quotes PHẢI dùng đúng số này
+RECHECK_CTX_LIMIT = 30_000    # ngữ cảnh bổ sung cho recheck_lines (Tavily cứu hộ)
+
+# ===== Structured Outputs (S2): schema strict cho bước bóc tách — GPT-4.1 mini đảm bảo JSON đúng schema,
+# hết hẳn lỗi JSON cụt/sai. Endpoint không hỗ trợ (Gemini bậc cũ...) sẽ tự hạ cấp: json_schema → json_object → tắt.
+def _spec_row_schema():
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "nhom_thong_so": {"type": ["string", "null"]},
+            "ten_thong_so": {"type": "string"},
+            "gia_tri_yeu_cau": {"type": "string"},
+            "don_vi": {"type": ["string", "null"]},
+            "toan_tu_so_sanh": {"type": "string", "enum": [">=", "<=", "=", "khoang", "khac"]},
+            "gia_tri_so": {"type": ["number", "null"]},
+            "gia_tri_so_min": {"type": ["number", "null"]},
+            "gia_tri_so_max": {"type": ["number", "null"]},
+            "loai_du_lieu": {"type": "string",
+                             "enum": ["thong_so_ky_thuat", "tieu_chuan_chung_chi", "vat_tu_thi_cong", "yeu_cau_chung"]},
+            "muc_do": {"type": "string", "enum": ["bat_buoc", "khong_ro"]},
+            "trich_dan_nguon": {"type": "string"},
+        },
+        "required": ["nhom_thong_so", "ten_thong_so", "gia_tri_yeu_cau", "don_vi", "toan_tu_so_sanh",
+                     "gia_tri_so", "gia_tri_so_min", "gia_tri_so_max", "loai_du_lieu", "muc_do", "trich_dan_nguon"],
+    }
+
+
+EXTRACT_SCHEMA = {
+    "name": "hsmt_extract", "strict": True,
+    "schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"items": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "stt": {"type": "string"},
+                "ten_hang_hoa_muc": {"type": "string"},
+                "tin_cay": {"type": "string", "enum": ["Cao", "Trung bình", "Thấp"]},
+                "can_cu": {"type": "string"},
+                "hang_muc_con": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "ten_hang_muc_con": {"type": "string"},
+                        "trang_thai_thong_so": {"type": "string", "enum": ["co_thong_so", "khong_co_thong_so"]},
+                        "loai_hang_muc": {"type": "string", "enum": ["doc_lap", "phu_kien_di_kem"]},
+                        "phu_thuoc_hang_muc_con": {"type": ["string", "null"]},
+                        "thong_so": {"type": "array", "items": _spec_row_schema()},
+                    },
+                    "required": ["ten_hang_muc_con", "trang_thai_thong_so", "loai_hang_muc",
+                                 "phu_thuoc_hang_muc_con", "thong_so"],
+                }},
+            },
+            "required": ["stt", "ten_hang_hoa_muc", "tin_cay", "can_cu", "hang_muc_con"],
+        }}},
+        "required": ["items"],
+    },
+}
+
+_RF_UNSUPPORTED = re.compile(r"response_format|json_schema|structured|additional_?properties|schema", re.I)
 
 
 SPEC_PROMPT = """Bạn là một chuyên gia bóc tách hồ sơ mời thầu (HSMT) xây dựng/CNTT tại Việt Nam.
@@ -47,7 +110,7 @@ QUY TẮC BẮT BUỘC:
 8. Trả về ĐÚNG MỘT phần tử JSON cho MỖI STT đưa vào, giữ đúng STT gốc.
 9. CHỈ xuất JSON hợp lệ. Không markdown, không giải thích, không dấu ``` .
 
-SCHEMA ĐẦU RA là MỘT MẢNG JSON:
+SCHEMA ĐẦU RA: MẢNG JSON như dưới, hoặc object {"items": [mảng đó]} nếu hệ thống yêu cầu object — hai dạng đều hợp lệ.
 QUY TAC THEM VE PHU KIEN KHONG CO THONG SO:
 - Bat buoc giu moi thiet bi con da liet ke trong hang_muc_con, ke ca khi khong co dong thong so ben duoi.
 - Voi phu kien nhu "Rail Kit - Thanh truot gan tu Rack cho UPS": dat thong_so=[], trang_thai_thong_so="khong_co_thong_so", loai_hang_muc="phu_kien_di_kem", phu_thuoc_hang_muc_con la thiet bi chinh no di kem.
@@ -106,6 +169,9 @@ QUY TẮC NGUỒN BẮT BUỘC:
    (lấy được từ cả khối [NGUON n] lẫn [KQ TIM]) có chứa giá trị đó. CẤM viết lại/dịch/rút gọn — copy y nguyên ký tự.
    Hệ thống sẽ TỰ ĐỘNG dò lại từng trích dẫn trong ngữ cảnh: trích dẫn không tìm thấy = model bị loại.
    Không tìm được đoạn nguyên văn chứa giá trị → thông số đó chưa có bằng chứng → loại model.
+10. TIÊU CHÍ KHÔNG BẮT BUỘC: dòng thông số có "muc_do":"khong_ro" trong JSON yêu cầu là dòng KHÔNG chắc chắn
+    là thông số kỹ thuật. Vẫn đối chiếu nếu nguồn có dữ liệu; nếu thiếu dữ liệu thì ghi "danh_gia":"Chưa rõ"
+    và KHÔNG vì dòng đó mà loại model hay hạ "dat_100" — chỉ dòng bắt buộc mới quyết định đạt 100%.
 Hãy tìm tối đa 3 model ĐẠT 100%. Nếu không tìm thấy model nào đạt 100%, trả "ung_vien": [] và ghi rõ lý do trong "nhan_xet".
 Trả về DUY NHẤT JSON:
 {"ung_vien":[{"model":"đúng suffix/phiên bản","hang":"","dat_100":true,"nguon_loai":"Chính hãng|Đại lý/tổng hợp","bang":[{"yeu_cau":"tên tiêu chí","thong_so_hsmt":"giá trị yêu cầu HSMT","gia_tri":"giá trị thực tế của model (theo nguồn)","danh_gia":"Đạt|Vượt","trich_dan":"đoạn nguyên văn copy từ ngữ cảnh"}],"nguon":"URL cụ thể"}],"nhan_xet":"kết luận model nào đạt 100%; nếu không có thì nói rõ lý do"}
@@ -133,16 +199,32 @@ class AIEngine:
         self.base = resolve_base_url(self.model, cfg.get("base_url"))
         self.key = cfg.get("api_key", "")
         self.extract_timeout = int(cfg.get("extract_timeout", 90))
+        self.compare_timeout = int(cfg.get("compare_timeout", 120))   # ngữ cảnh 90K cần trần thoáng hơn 60s
         self.usage = {"in": 0, "out": 0}
+        self._usage_lock = threading.Lock()      # nhiều luồng cùng cộng usage khi pipeline song song
+        # Structured Outputs: 2 = json_schema strict, 1 = json_object, 0 = tắt.
+        # Endpoint không hỗ trợ (HTTP 400 nhắc response_format/schema) → tự hạ cấp, không tốn lượt retry.
+        self._rf_level = 2
 
-    def chat(self, prompt, retries=3, timeout=60):
-        body = {
-            "model": self.model,
-            "temperature": 0.2,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+    def _response_format(self, schema, force_json):
+        if schema and self._rf_level >= 2:
+            return {"type": "json_schema", "json_schema": schema}
+        if (schema or force_json) and self._rf_level >= 1:
+            return {"type": "json_object"}
+        return None
+
+    def chat(self, prompt, retries=3, timeout=60, system=None, schema=None, force_json=False):
+        """system: phần TĨNH đặt riêng (S5 — prefix ổn định để OpenAI prompt-cache, input rẻ ~4 lần).
+        schema: dict json_schema strict (S2). force_json: tối thiểu ép json_object."""
+        messages = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}]
         last = ""
-        for i in range(retries):
+        attempt = 0
+        while attempt < retries:
+            body = {"model": self.model, "temperature": 0.2, "messages": messages}
+            rf = self._response_format(schema, force_json)
+            if rf:
+                body["response_format"] = rf
             try:
                 r = requests.post(
                     f"{self.base}/chat/completions",
@@ -150,14 +232,18 @@ class AIEngine:
                     headers={"Authorization": f"Bearer {self.key}"},
                     json=body,
                 )
+                if r.status_code == 400 and rf is not None and _RF_UNSUPPORTED.search(r.text or ""):
+                    self._rf_level = 1 if self._rf_level >= 2 else 0   # hạ cấp rồi gọi lại ngay
+                    continue
                 if r.status_code == 429 or r.status_code >= 500:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
+                    attempt += 1
                     wait = 0
                     try:
                         wait = int(r.headers.get("Retry-After", "0"))
                     except ValueError:
                         pass
-                    time.sleep(min(wait or 10 * (i + 1), 65))
+                    time.sleep(min(wait or 10 * attempt, 65))
                     continue
                 if r.status_code >= 400:
                     raise RuntimeError(
@@ -167,17 +253,20 @@ class AIEngine:
                     )
                 d = r.json()
                 u = d.get("usage", {})
-                self.usage["in"] += u.get("prompt_tokens", 0)
-                self.usage["out"] += u.get("completion_tokens", 0)
+                with self._usage_lock:
+                    self.usage["in"] += u.get("prompt_tokens", 0)
+                    self.usage["out"] += u.get("completion_tokens", 0)
                 return d["choices"][0]["message"]["content"]
             except requests.ReadTimeout:
                 last = f"ReadTimeout: endpoint did not return within {timeout}s"
-                if i < retries - 1:
-                    time.sleep(5 * (i + 1))
+                attempt += 1
+                if attempt < retries:
+                    time.sleep(5 * attempt)
             except requests.RequestException as e:
                 last = f"{type(e).__name__}: {str(e)[:200]}"
-                if i < retries - 1:
-                    time.sleep(10 * (i + 1))
+                attempt += 1
+                if attempt < retries:
+                    time.sleep(10 * attempt)
         raise RuntimeError(
             f"AI không phản hồi sau {retries} lần thử. Lỗi cuối: {last or 'không rõ'}\n"
             "-> Thường do hết hạn mức, mạng chặn endpoint, hoặc key chưa kích hoạt"
@@ -198,17 +287,23 @@ class AIEngine:
     def extract_specs_batch(self, items):
         # 3000 ký tự đủ trọn thông số mục dài nhất (báo cháy ~1.900) — không cắt mất dòng cuối
         block = "\n".join(f"- STT {it['stt']} | {it['ten']} | {it['thongso'][:3000]}" for it in items)
-        raw = self.chat(SPEC_PROMPT + block, retries=2, timeout=self.extract_timeout)
+        # SPEC_PROMPT tĩnh → system (hit prompt cache); schema strict → JSON đúng cấu trúc ngay từ model
+        raw = self.chat(block, retries=2, timeout=self.extract_timeout,
+                        system=SPEC_PROMPT, schema=EXTRACT_SCHEMA)
         try:
-            return self.parse_json(raw)
+            data = self.parse_json(raw)
         except json.JSONDecodeError:
+            # Lưới an toàn cuối (chỉ còn chạm tới khi endpoint không có Structured Outputs)
             fix_prompt = (
                 "Sua JSON sau thanh JSON hop le. Chi tra ve JSON, khong markdown, khong giai thich. "
                 "Khong them/bot du lieu, chi sua dau phay, dau ngoac, quote, escape neu can.\n"
                 f"JSON_LOI:\n{raw[:12000]}"
             )
-            fixed = self.chat(fix_prompt, retries=1, timeout=60)
-            return self.parse_json(fixed)
+            fixed = self.chat(fix_prompt, retries=1, timeout=60, force_json=True)
+            data = self.parse_json(fixed)
+        if isinstance(data, dict):                       # schema strict trả {"items": [...]}
+            data = data.get("items") or []
+        return data
 
     def identify_batch(self, items):
         return self.extract_specs_batch(items)
@@ -216,14 +311,16 @@ class AIEngine:
     def compare(self, item, spec, search_ctx=""):
         specs = spec.get("thong_so") or []
         spec_block = json.dumps(specs, ensure_ascii=False) if specs else item["thongso"][:1500]
+        # S5: CMP_PROMPT tĩnh chuyển lên system (trước đây nằm CUỐI prompt → không bao giờ hit cache);
+        # A2: ngữ cảnh nâng 24K → CMP_CTX_LIMIT (90K) — bằng chứng fetch về được dùng trọn.
         p = (
             f"Hạng mục: {item['ten']}\n"
             f"Loại thiết bị: {spec.get('loai_thiet_bi', '')}\n"
             f"THÔNG SỐ YÊU CẦU (JSON chuẩn hóa, đã bỏ Windows 11 Pro nếu có): {spec_block}\n"
-            f"NGỮ CẢNH WEB (Serper tìm theo thông số + datasheet/link hãng):\n{search_ctx[:24000]}\n"
-            + CMP_PROMPT
+            f"NGỮ CẢNH WEB (Serper tìm theo thông số + datasheet/link hãng):\n{search_ctx[:CMP_CTX_LIMIT]}\n"
+            "Thực hiện NHIỆM VỤ theo đúng quy tắc đã nêu. Trả về DUY NHẤT JSON đúng định dạng."
         )
-        return self.parse_json(self.chat(p))
+        return self.parse_json(self.chat(p, timeout=self.compare_timeout, system=CMP_PROMPT, force_json=True))
 
     def recheck_lines(self, item, cand, missing_rows, ctx):
         """Đối chiếu LẠI CHỈ các dòng còn thiếu bằng chứng cho MỘT model (không chạy lại toàn bộ)."""
@@ -236,10 +333,10 @@ class AIEngine:
             f"model + đánh giá (Đạt|Vượt|Không đạt|~ Chưa xác minh) + trích dẫn NGUYÊN VĂN copy từ ngữ cảnh.\n"
             f"Áp dụng: biểu thức tương đương (10KVA/10KW=PF1.0, nits=cd/m²), đúng chiều ≥/≤, Vượt chỉ khi cùng loại.\n"
             f"DÒNG CẦN ĐỐI CHIẾU: {lines}\n"
-            f"NGỮ CẢNH BỔ SUNG:\n{ctx[:14000]}\n"
+            f"NGỮ CẢNH BỔ SUNG:\n{ctx[:RECHECK_CTX_LIMIT]}\n"
             'Trả về DUY NHẤT JSON: {"bang":[{"yeu_cau":"","thong_so_hsmt":"","gia_tri":"","danh_gia":"","trich_dan":""}]}'
         )
-        return self.parse_json(self.chat(p))
+        return self.parse_json(self.chat(p, force_json=True))
 
     def duties(self, text):
         return self.parse_json(self.chat(DUTY_PROMPT + text[:15000]))

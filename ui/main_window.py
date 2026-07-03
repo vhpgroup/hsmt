@@ -24,6 +24,9 @@ from . import widgets
 from .settings_dialog import SettingsDialog
 
 
+CANCEL_MSG = "Đã dừng phân tích theo yêu cầu"
+
+
 class Worker(QThread):
     progress = Signal(str, int)
     project_ready = Signal(dict)
@@ -38,6 +41,7 @@ class Worker(QThread):
         self._pause_gate = threading.Event()
         self._pause_gate.set()
         self._last_progress = 0
+        self._cancelled = False
 
     def emit_progress(self, text, value):
         self._last_progress = value
@@ -49,10 +53,23 @@ class Worker(QThread):
     def resume(self):
         self._pause_gate.set()
 
+    def cancel(self):
+        """Hủy run: mọi worker song song sẽ dừng ở checkpoint kế tiếp (pause_check).
+        Thả luôn cổng pause để luồng đang đứng chờ thấy được cờ hủy."""
+        self._cancelled = True
+        self._pause_gate.set()
+
     def wait_if_paused(self):
+        # pause_check của analyzer — được GỌI TỪ NHIỀU THREAD song song:
+        # Event.wait/bool flag đều thread-safe; raise ở đây làm worker đó dừng ngay,
+        # exception nổi qua futures về analyzer.run -> Worker.run -> failed.emit
+        if self._cancelled:
+            raise RuntimeError(CANCEL_MSG)
         if not self._pause_gate.is_set():
             self.progress.emit("Đã tạm dừng - bấm Tiếp tục để chạy tiếp", self._last_progress)
         self._pause_gate.wait()
+        if self._cancelled:
+            raise RuntimeError(CANCEL_MSG)
 
     def run(self):
         try:
@@ -146,6 +163,9 @@ class MainWindow(QMainWindow):
         self.pause_action = tb.addAction("⏸ Tạm dừng")
         self.pause_action.triggered.connect(self.toggle_pause)
         self.pause_action.setEnabled(False)
+        self.stop_action = tb.addAction("⏹ Dừng")
+        self.stop_action.triggered.connect(self.stop_run)
+        self.stop_action.setEnabled(False)
 
         self.pbar = QProgressBar()
         self.plabel = QLabel("Chưa có file - bấm Import hồ sơ")
@@ -222,6 +242,7 @@ class MainWindow(QMainWindow):
         self.is_paused = False
         self.pause_action.setText("⏸ Tạm dừng")
         self.pause_action.setEnabled(True)
+        self.stop_action.setEnabled(True)
         self.worker.start()
 
     def toggle_pause(self):
@@ -239,10 +260,27 @@ class MainWindow(QMainWindow):
             self.pause_action.setText("▶ Tiếp tục")
             self.st.setText("Đã tạm dừng")
 
+    def stop_run(self):
+        worker = getattr(self, "worker", None)
+        if not worker or not worker.isRunning():
+            return
+        worker.cancel()
+        self.stop_action.setEnabled(False)
+        self.st.setText("Đang dừng — chờ các truy vấn đang bay kết thúc...")
+
+    def closeEvent(self, event):
+        """Đóng app giữa chừng: hủy run để QThread + pool không thành tiến trình ma đốt credit."""
+        worker = getattr(self, "worker", None)
+        if worker and worker.isRunning():
+            worker.cancel()
+            worker.wait(3000)   # chờ tối đa 3s cho worker thoát checkpoint; HTTP đang bay tự tắt theo timeout
+        event.accept()
+
     def reset_run_controls(self):
         self.is_paused = False
         self.pause_action.setText("⏸ Tạm dừng")
         self.pause_action.setEnabled(False)
+        self.stop_action.setEnabled(False)
 
     def render_project(self, data):
         p = data.get("proj", {}) or {}
@@ -293,11 +331,18 @@ class MainWindow(QMainWindow):
 
     def on_failed(self, error):
         self.reset_run_controls()
+        if CANCEL_MSG in str(error):
+            # Người dùng chủ động dừng — không phải lỗi, không bật popup đỏ
+            self.plabel.setText("Đã dừng phân tích. Kết quả đã chạy xong vẫn hiển thị trên bảng.")
+            self.st.setText("Đã dừng theo yêu cầu")
+            return
         QMessageBox.critical(self, "Lỗi", error)
 
     def on_item(self, row):
         self.live_items[row["id"]] = row
-        ordered = list(self.live_items.values())
+        # Pipeline song song trả hàng theo thứ tự HOÀN THÀNH (1c có thể xong trước 1a)
+        # → sort STT tự nhiên (1 < 1a < 1b < 2 < 10) để bảng live không nhảy loạn vị trí
+        ordered = sorted(self.live_items.values(), key=lambda r: preprocess.stt_sort_key(r.get("stt")))
         widgets.fill_identify(self.id_table, ordered)
         widgets.fill_compare(self.cmp_table, ordered)
 

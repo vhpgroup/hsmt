@@ -4,3 +4,6 @@ PyMuPDF>=1.24
 requests>=2.31
 reportlab>=4.0
 openpyxl>=3.1
+# OCR cho datasheet dạng scan/ảnh (tùy chọn — cần cài thêm engine tesseract trên máy)
+pytesseract>=0.3.10
+Pillow>=10.0

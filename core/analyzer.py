@@ -31,14 +31,41 @@ def _strip_windows_terms(text):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _dir_ops(s):
+    """Trả về (có_≥, có_≤) từ chuỗi — chuẩn hóa >= <= và biến thể."""
+    s = (s or "").replace(">=", "≥").replace("<=", "≤").replace("≧", "≥").replace("≦", "≤")
+    return ("≥" in s or ">" in s.replace("≥", ""), "≤" in s or "<" in s.replace("≤", ""))
+
+
+def _fix_operator(row):
+    """Chốt cứng chống đảo dấu: nếu 'gia_tri' lệch chiều ≥/≤ so với 'nguyen_van' → sửa theo nguyen_van (chân lý)."""
+    nv, gv = row.get("nguyen_van", ""), row.get("gia_tri", "")
+    if not nv or not gv:
+        return row
+    nv_ge, nv_le = _dir_ops(nv)
+    gv_ge, gv_le = _dir_ops(gv)
+    # nguyen_van chỉ 1 chiều rõ ràng, gia_tri lại chiều NGƯỢC → đảo lại
+    if nv_ge and not nv_le and gv_le and not gv_ge:
+        row["gia_tri"] = gv.replace("<=", "≥").replace("≤", "≥").replace("<", "≥")
+        row["_canh_bao_dao_dau"] = f"Đã sửa chiều toán tử theo HSMT gốc: {nv}"
+    elif nv_le and not nv_ge and gv_ge and not gv_le:
+        row["gia_tri"] = gv.replace(">=", "≤").replace("≥", "≤").replace(">", "≤")
+        row["_canh_bao_dao_dau"] = f"Đã sửa chiều toán tử theo HSMT gốc: {nv}"
+    return row
+
+
 def _filter_specs(spec):
     out = dict(spec or {})
     rows = []
     for row in out.get("thong_so") or []:
         blob = f"{row.get('ten', '')} {row.get('gia_tri', '')}"
         if not _is_windows_11_pro(blob):
-            rows.append(row)
+            rows.append(_fix_operator(row))
     out["thong_so"] = rows
+    # áp cả cho thông số của từng thiết bị con (thanh_phan)
+    for comp in out.get("thanh_phan") or []:
+        comp["thong_so"] = [_fix_operator(r) for r in (comp.get("thong_so") or [])
+                            if not _is_windows_11_pro(f"{r.get('ten','')} {r.get('gia_tri','')}")]
     out["tu_khoa_tim"] = _strip_windows_terms(out.get("tu_khoa_tim", ""))
     return out
 
@@ -199,7 +226,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
     results, todo = {}, []
     for it in items:
         wait_if_needed()
-        hit = cache.get(item_key(it, "specs_v7"), ttl)
+        hit = cache.get(item_key(it, "specs_v8"), ttl)
         if hit:
             results[it["id"]] = hit
         else:
@@ -250,7 +277,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
                                    "tin_cay": "Thấp", "can_cu": "Lỗi AI: thiếu phần tử STT trong JSON trả về",
                                    "tu_khoa_tim": b.get("ten", "")})
             if "lỗi ai" not in str(r.get("can_cu", "")).lower():
-                cache.put(item_key(b, "specs_v7"), r)
+                cache.put(item_key(b, "specs_v8"), r)
             results[b["id"]] = r
             if on_item:
                 r0 = dict(b)
@@ -301,7 +328,7 @@ def run(items, cfg, ai, progress=lambda s, p: None, counter=None, on_item=None, 
         row = it
         row["risk"] = risk_level(spec)
         if do_cmp and (spec.get("thong_so") or spec.get("tu_khoa_tim")):
-            ck = item_key(it, "compare_v11")
+            ck = item_key(it, "compare_v12")
             cmp_hit = cache.get(ck, ttl)
             if not cmp_hit:
                 wait_if_needed()
